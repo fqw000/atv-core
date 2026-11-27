@@ -90,8 +90,12 @@ object LocalAdbDriver {
             isConnected.set(true)
             Log.i(TAG, "Successfully connected to local ADB daemon!")
             return true
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to connect to local ADB ($ADB_HOST:$ADB_PORT): ${e.message}")
+        } catch (e: Throwable) {
+            // mitv4a: catch Throwable (not just Exception) because dadb's key
+            // generation can throw NoClassDefFoundError / UnsatisfiedLinkError
+            // on API 23 if a Java 8+ class or native symbol is unavailable.
+            // An Error escaping this executor thread would kill the whole app.
+            Log.w(TAG, "Failed to connect to local ADB ($ADB_HOST:$ADB_PORT): ${e.javaClass.simpleName}: ${e.message}")
             closeInternal()
             return false
         }

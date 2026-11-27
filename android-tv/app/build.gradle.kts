@@ -39,6 +39,12 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // mitv4a: API 23 (Android 6.0) lacks Java 8+ library classes such as
+        // java.util.Base64 (API 26) and java.time.Duration (API 26). dadb's
+        // ADB key generation uses java.util.Base64, which crashed on boot
+        // with NoClassDefFoundError. Core library desugaring backports these
+        // Java 8+ APIs so they work down to minSdk 21.
+        isCoreLibraryDesugaringEnabled = true
     }
 
     kotlinOptions {
@@ -63,6 +69,10 @@ android {
 }
 
 dependencies {
+    // mitv4a: backport Java 8+ library APIs (java.util.Base64, java.time.*,
+    // java.util.function.*, java.util.stream.*) for API 23. Required because
+    // dadb uses java.util.Base64 at runtime (ADB keypair generation).
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0")
