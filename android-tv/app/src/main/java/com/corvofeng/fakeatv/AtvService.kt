@@ -207,6 +207,9 @@ class AtvService : Service(), AtvNative.Callback {
                 acquire()
             }
         }
+        val mcHeld = multicastLock?.isHeld == true
+        Log.i(TAG, "MulticastLock acquired=$mcHeld (mDNS discovery requires this)")
+        broadcast("Diag", "MulticastLock=$mcHeld")
 
         // Acquire WakeLock to keep networking responsive (indefinite for TV)
         if (wakeLock == null || !wakeLock!!.isHeld) {
@@ -218,6 +221,8 @@ class AtvService : Service(), AtvNative.Callback {
 
         val deviceId = DeviceInfo.getDeviceId(this)
         val serverId = DeviceInfo.getServerIdentifier(this, deviceId)
+        Log.i(TAG, "Identity: name=$name deviceId=$deviceId serverId=$serverId")
+        broadcast("Diag", "name=$name id=$deviceId")
 
         if (startThread?.isAlive == true) {
             return
@@ -242,23 +247,28 @@ class AtvService : Service(), AtvNative.Callback {
 
                 if (hasValidIp) {
                     Log.i(TAG, "Attempt $attempts: starting native server with IP $localIp (Name: $name, PIN: $pin)")
+                    broadcast("Diag", "启动 mDNS 广播 @ $localIp (尝试 $attempts)")
                     val started = try {
                         AtvNative.nativeStartServer(name, pin, deviceId, serverId, localIp!!, this)
                     } catch (e: Throwable) {
                         // Defensive: never let a native error crash the process.
                         Log.e(TAG, "nativeStartServer threw: ${e.message}", e)
+                        broadcast("Diag", "native 异常: ${e.message}")
                         false
                     }
                     if (started) {
                         isRunning = true
                         broadcast("ServerStatus", "running")
-                        Log.i(TAG, "Native server started successfully on attempt $attempts with IP $localIp")
+                        broadcast("Diag", "mDNS 服务注册完成，等待 iPhone 发现…")
+                        Log.i(TAG, "Native server started successfully on attempt $attempts with IP $localIp (see FakeAtvNative for mDNS details)")
                         break
                     } else {
                         Log.w(TAG, "nativeStartServer returned false on attempt $attempts, will retry in 2.5s")
+                        broadcast("Diag", "native 启动返回 false（详见 FakeAtvNative 日志），重试中…")
                     }
                 } else {
                     Log.i(TAG, "Waiting for network IP before starting server (attempt $attempts/$maxAttempts)...")
+                    broadcast("Diag", "等待网络 IP（$attempts/$maxAttempts）…")
                 }
 
                 try {

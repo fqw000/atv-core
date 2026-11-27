@@ -278,28 +278,16 @@ pub fn get_if_addrs() -> io::Result<Vec<Interface>> {
 #[cfg(target_os = "android")]
 mod android_ioctl {
     use super::{IfAddr, Ifv4Addr, Interface};
-    use libc::{c_char, c_int, ioctl, sockaddr, sockaddr_in, AF_INET, SIOCGIFCONF, SIOCGIFBRDADDR, SIOCGIFNETMASK};
+    // Use libc's official `ifreq` / `ifconf` definitions. Their size and the
+    // union layout are correct for each ABI: sizeof(ifreq) is 40 on 64-bit and
+    // 32 on 32-bit Android. Hand-rolling the struct previously used a fixed 56
+    // bytes, which skipped wlan0 and broke mDNS multicast interface selection.
+    use libc::{c_int, ifconf, ifreq, ioctl, sockaddr, sockaddr_in, AF_INET, SIOCGIFBRDADDR, SIOCGIFCONF, SIOCGIFNETMASK};
     // Ioctl request type differs between 32-bit (i32) and 64-bit (u64) Android;
     // `as _` lets the compiler pick the right one per target.
     use std::io;
     use std::mem;
     use std::net::Ipv4Addr;
-
-    // struct ifreq is 40 bytes on Linux/Android; ifr_name is the first 16 bytes,
-    // ifr_addr (a sockaddr) follows at offset 16.
-    #[repr(C)]
-    struct IfReq {
-        ifr_name: [c_char; 16],
-        ifr_addr: sockaddr,
-        // padding up to sizeof(ifreq) = 40
-        ifr_pad: [u8; 24],
-    }
-
-    #[repr(C)]
-    struct IfConf {
-        ifc_len: c_int,
-        ifc_buf: *mut c_char,
-    }
 
     fn sockaddr_to_v4(sa: &sockaddr) -> Option<Ipv4Addr> {
         if sa.sa_family as c_int != AF_INET {
@@ -310,17 +298,24 @@ mod android_ioctl {
         Some(Ipv4Addr::new(b[0], b[1], b[2], b[3]))
     }
 
-    fn ioctl_for_name(fd: c_int, name: &[c_char; 16], request: libc::Ioctl) -> Option<Ipv4Addr> {
-        let mut req = IfReq {
-            ifr_name: *name,
-            ifr_addr: unsafe { mem::zeroed() },
-            ifr_pad: [0; 24],
-        };
-        let rc = unsafe { ioctl(fd, request, &mut req as *mut IfReq) };
+    fn ioctl_for_name(fd: c_int, name: &[libc::c_char; libc::IFNAMSIZ as usize], request: libc::Ioctl) -> Option<Ipv4Addr> {
+        let mut req: ifreq = unsafe { mem::zeroed() };
+        req.ifr_name = *name;
+        let rc = unsafe { ioctl(fd, request, &mut req as *mut ifreq) };
         if rc < 0 {
             return None;
         }
-        sockaddr_to_v4(&req.ifr_addr)
+        unsafe { sockaddr_to_v4(&req.ifr_ifru.ifru_addr) }
+    }
+
+    fn ioctl_index(fd: c_int, name: &[libc::c_char; libc::IFNAMSIZ as usize]) -> Option<u32> {
+        let mut req: ifreq = unsafe { mem::zeroed() };
+        req.ifr_name = *name;
+        let rc = unsafe { ioctl(fd, libc::SIOCGIFINDEX as _, &mut req as *mut ifreq) };
+        if rc < 0 {
+            return None;
+        }
+        Some(unsafe { req.ifr_ifru.ifru_ifindex } as u32)
     }
 
     pub fn get_if_addrs() -> io::Result<Vec<Interface>> {
@@ -333,8 +328,10 @@ mod android_ioctl {
             }
 
             // First query: determine required buffer size.
-            let mut conf = IfConf { ifc_len: 0, ifc_buf: std::ptr::null_mut() };
-            if ioctl(fd, SIOCGIFCONF as _, &mut conf as *mut IfConf) < 0 {
+            let mut conf: ifconf = mem::zeroed();
+            conf.ifc_len = 0;
+            conf.ifc_ifcu.ifcu_buf = std::ptr::null_mut();
+            if ioctl(fd, SIOCGIFCONF as _, &mut conf as *mut ifconf) < 0 {
                 libc::close(fd);
                 return Err(io::Error::last_os_error());
             }
@@ -345,18 +342,18 @@ mod android_ioctl {
 
             let mut buf = vec![0u8; conf.ifc_len as usize];
             conf.ifc_len = buf.len() as c_int;
-            conf.ifc_buf = buf.as_mut_ptr() as *mut c_char;
-            if ioctl(fd, SIOCGIFCONF as _, &mut conf as *mut IfConf) < 0 {
+            conf.ifc_ifcu.ifcu_buf = buf.as_mut_ptr() as *mut libc::c_char;
+            if ioctl(fd, SIOCGIFCONF as _, &mut conf as *mut ifconf) < 0 {
                 libc::close(fd);
                 return Err(io::Error::last_os_error());
             }
 
-            let ifreq_size = mem::size_of::<IfReq>();
+            let ifreq_size = mem::size_of::<ifreq>();
             let used = conf.ifc_len as usize;
             let count = used / ifreq_size;
             for i in 0..count {
-                let req = &*(buf.as_ptr().add(i * ifreq_size) as *const IfReq);
-                let ip = match sockaddr_to_v4(&req.ifr_addr) {
+                let req = &*(buf.as_ptr().add(i * ifreq_size) as *const ifreq);
+                let ip = match sockaddr_to_v4(&req.ifr_ifru.ifru_addr) {
                     Some(ip) => ip,
                     None => continue,
                 };
@@ -368,6 +365,7 @@ mod android_ioctl {
                     .unwrap_or(Ipv4Addr::new(255, 255, 255, 255));
                 let broadcast = ioctl_for_name(fd, &req.ifr_name, SIOCGIFBRDADDR as _);
                 let prefixlen = u32::from_le_bytes(netmask.octets()).count_ones() as u8;
+                let index = ioctl_index(fd, &req.ifr_name);
 
                 ret.push(Interface {
                     name,
@@ -377,7 +375,7 @@ mod android_ioctl {
                         prefixlen,
                         broadcast,
                     }),
-                    index: None,
+                    index,
                 });
             }
             libc::close(fd);

@@ -1,5 +1,6 @@
 //! JNI bindings for Android TV: runs AtvServer and dispatches callbacks into Kotlin/Java.
 
+use std::io;
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -12,6 +13,115 @@ use tokio::runtime::Runtime;
 use tracing::{error, info, warn};
 
 use atv_core::{AtvConfig, AtvDelegate, AtvServer, EventKind, TouchPhase};
+
+// ---------------------------------------------------------------------------
+// Android logcat bridge for `tracing`.
+//
+// The atv-core / atv-android crates log everything through `tracing`, but the
+// library previously installed no subscriber, so those events were silently
+// dropped — mDNS registration results, bind IPs and startup errors never
+// showed up in logcat. This routes every tracing event into Android logcat via
+// liblog's `__android_log_write`, which exists since API 1 and is therefore
+// safe on API 23. Tag: FakeAtvNative.
+// ---------------------------------------------------------------------------
+mod android_log {
+    use std::ffi::CStr;
+    use std::io::{self, Write};
+    use std::sync::Once;
+
+    const TAG: &[u8] = b"FakeAtvNative\0";
+    const ANDROID_LOG_VERBOSE: i32 = 2;
+    const ANDROID_LOG_DEBUG: i32 = 3;
+    const ANDROID_LOG_INFO: i32 = 4;
+    const ANDROID_LOG_WARN: i32 = 5;
+    const ANDROID_LOG_ERROR: i32 = 6;
+
+    #[link(name = "log")]
+    extern "C" {
+        fn __android_log_write(prio: i32, tag: *const i8, text: *const i8) -> i32;
+    }
+
+    fn write_log(prio: i32, msg: &str) {
+        let tag = CStr::from_bytes_with_nul(TAG).unwrap();
+        let text = std::ffi::CString::new(msg).unwrap_or_else(|_| {
+            std::ffi::CString::new("<invalid log bytes>").unwrap()
+        });
+        unsafe {
+            __android_log_write(prio, tag.as_ptr() as *const i8, text.as_ptr() as *const i8);
+        }
+    }
+
+    /// A line-buffered writer that emits each complete line to logcat.
+    struct LogcatWriter {
+        level: i32,
+        buf: Vec<u8>,
+    }
+
+    impl Write for LogcatWriter {
+        fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+            self.buf.extend_from_slice(data);
+            // tracing-subscriber fmt writes whole formatted events (with a
+            // trailing newline) per write call. Flush each complete line.
+            while let Some(pos) = self.buf.iter().position(|&b| b == b'\n') {
+                let line: Vec<u8> = self.buf.drain(..=pos).collect();
+                let line = &line[..line.len() - 1];
+                if !line.is_empty() {
+                    if let Ok(s) = std::str::from_utf8(line) {
+                        write_log(self.level, s);
+                    }
+                }
+            }
+            Ok(data.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            if !self.buf.is_empty() {
+                let line = std::mem::take(&mut self.buf);
+                if let Ok(s) = std::str::from_utf8(&line) {
+                    write_log(self.level, s);
+                }
+            }
+            Ok(())
+        }
+    }
+
+    /// MakeWriter that maps tracing levels to Android log priorities.
+    #[derive(Clone)]
+    struct LogcatMakeWriter;
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogcatMakeWriter {
+        type Writer = LogcatWriter;
+        fn make_writer(&'a self) -> Self::Writer {
+            LogcatWriter { level: ANDROID_LOG_INFO, buf: Vec::new() }
+        }
+        fn make_writer_for(&'a self, meta: &tracing::Metadata<'_>) -> Self::Writer {
+            let level = match *meta.level() {
+                tracing::Level::ERROR => ANDROID_LOG_ERROR,
+                tracing::Level::WARN => ANDROID_LOG_WARN,
+                tracing::Level::INFO => ANDROID_LOG_INFO,
+                tracing::Level::DEBUG => ANDROID_LOG_DEBUG,
+                tracing::Level::TRACE => ANDROID_LOG_VERBOSE,
+            };
+            LogcatWriter { level, buf: Vec::new() }
+        }
+    }
+
+    static INIT: Once = Once::new();
+
+    pub fn init() {
+        INIT.call_once(|| {
+            use tracing_subscriber::fmt::format::FmtSpan;
+            let _ = tracing_subscriber::fmt()
+                .with_writer(LogcatMakeWriter)
+                .with_ansi(false)
+                .with_target(true)
+                .with_max_level(tracing::Level::TRACE)
+                .with_span_events(FmtSpan::NONE)
+                .try_init();
+            tracing::info!("FakeAtvNative logcat bridge installed");
+        });
+    }
+}
 
 struct JniDelegate {
     jvm: JavaVM,
@@ -111,6 +221,14 @@ struct RunningServer {
 static SERVER_STATE: Lazy<Mutex<Option<RunningServer>>> = Lazy::new(|| Mutex::new(None));
 static IS_RUNNING: AtomicBool = AtomicBool::new(false);
 
+/// Called by the Android runtime when libatv_android.so is loaded. Installs the
+/// tracing -> logcat bridge so all native logs become visible immediately.
+#[no_mangle]
+pub extern "system" fn JNI_OnLoad(_vm: JavaVM, _reserved: *mut std::ffi::c_void) -> jint {
+    android_log::init();
+    jni::sys::JNI_VERSION_1_6
+}
+
 #[no_mangle]
 pub extern "system" fn Java_com_corvofeng_fakeatv_AtvNative_nativeStartServer(
     mut env: JNIEnv,
@@ -122,6 +240,11 @@ pub extern "system" fn Java_com_corvofeng_fakeatv_AtvNative_nativeStartServer(
     local_ip: JString,
     callback: JObject,
 ) -> jboolean {
+    // Defensive: ensure the logcat bridge is installed even if JNI_OnLoad was
+    // not called by the runtime.
+    android_log::init();
+    info!("nativeStartServer called");
+
     let mut state_guard = match SERVER_STATE.lock() {
         Ok(guard) => guard,
         Err(_) => return JNI_FALSE,

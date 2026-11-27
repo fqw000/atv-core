@@ -30,6 +30,7 @@ dependencies = [
  "once_cell",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
