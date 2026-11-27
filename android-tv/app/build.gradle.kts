@@ -9,10 +9,11 @@ android {
 
     defaultConfig {
         applicationId = "com.corvofeng.fakeatv"
-        minSdk = 26
+        // mitv4a: Android 6.0.1 / API 23. Leanback 1.0.0 needs API 21 at minimum.
+        minSdk = 21
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0-mitv4a"
 
         ndk {
             abiFilters.addAll(listOf("arm64-v8a", "armeabi-v7a"))
@@ -66,5 +67,7 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.leanback:leanback:1.0.0")
+    // mitv4a: ADB retained for mouse-cursor tap/swipe (GestureDescription is API 24+).
+    // Button injection goes through TVRemoteIME HTTP /key (no ADB needed).
     implementation("dev.mobile:dadb:1.2.6")
 }

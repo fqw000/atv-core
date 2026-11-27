@@ -13,6 +13,8 @@ object DeviceInfo {
 
     const val PREF_MENU_BUTTON_BINDING = "menu_button_binding"
     const val PREF_INJECTION_MODE = "injection_mode"
+    const val PREF_HTTP_HOST = "http_key_host"
+    const val PREF_HTTP_PORT = "http_key_port"
 
     fun getPrefs(context: Context): SharedPreferences {
         val storageContext = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && !context.isDeviceProtectedStorage) {
@@ -41,6 +43,22 @@ object DeviceInfo {
 
     fun setInjectionMode(context: Context, mode: String) {
         getPrefs(context).edit().putString(PREF_INJECTION_MODE, mode.lowercase()).apply()
+    }
+
+    fun getHttpHost(context: Context): String {
+        return getPrefs(context).getString(PREF_HTTP_HOST, HttpKeyDriver.DEFAULT_HOST)
+            ?: HttpKeyDriver.DEFAULT_HOST
+    }
+
+    fun getHttpPort(context: Context): Int {
+        return getPrefs(context).getInt(PREF_HTTP_PORT, HttpKeyDriver.DEFAULT_PORT)
+    }
+
+    fun setHttpTarget(context: Context, host: String, port: Int) {
+        getPrefs(context).edit()
+            .putString(PREF_HTTP_HOST, host)
+            .putInt(PREF_HTTP_PORT, port)
+            .apply()
     }
 
     fun getDeviceName(context: Context): String {

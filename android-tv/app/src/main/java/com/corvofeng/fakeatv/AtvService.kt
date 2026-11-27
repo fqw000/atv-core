@@ -153,7 +153,13 @@ class AtvService : Service(), AtvNative.Callback {
         when (intent?.action) {
             ACTION_STOP -> {
                 stopServer()
-                stopForeground(STOP_FOREGROUND_REMOVE)
+                // mitv4a: STOP_FOREGROUND_REMOVE is API 24+; API 23 uses the boolean overload.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                } else {
+                    @Suppress("DEPRECATION")
+                    stopForeground(true)
+                }
                 stopSelf()
             }
             ACTION_SET_MENU_BINDING -> {
@@ -329,11 +335,17 @@ class AtvService : Service(), AtvNative.Callback {
     }
 
     private fun buildNotification(name: String, pin: Int): Notification {
+        // mitv4a: FLAG_IMMUTABLE is API 31+; on API 23 a plain flag 0 is sufficient.
+        val piFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        } else {
+            PendingIntent.FLAG_UPDATE_CURRENT
+        }
         val pendingIntent = PendingIntent.getActivity(
             this,
             0,
             Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE
+            piFlags
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)

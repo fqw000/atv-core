@@ -1,10 +1,8 @@
 package com.corvofeng.fakeatv
 
 import android.accessibilityservice.AccessibilityService
-import android.accessibilityservice.GestureDescription
 import android.content.Context
 import android.content.Intent
-import android.graphics.Path
 import android.os.Build
 import android.util.DisplayMetrics
 import android.util.Log
@@ -176,22 +174,16 @@ class AtvAccessibilityService : AccessibilityService() {
         tap(pointerX, pointerY)
     }
 
+    // mitv4a: GestureDescription (dispatchGesture) requires API 24+, which
+    // crashes on API 23. Use local ADB `input tap/swipe` for cursor gestures
+    // instead. Buttons still go through HTTP (see KeyDispatcher/HttpKeyDriver).
     private fun tap(x: Float, y: Float) {
-        val path = Path().apply {
-            moveTo(x, y)
-        }
-        val stroke = GestureDescription.StrokeDescription(path, 0, 50)
-        val gesture = GestureDescription.Builder().addStroke(stroke).build()
-        dispatchGesture(gesture, null, null)
+        val ok = LocalAdbDriver.tap(x, y)
+        if (!ok) Log.w(TAG, "tap via ADB failed (ADB on 127.0.0.1:5555 enabled?)")
     }
 
     private fun swipe(startX: Float, startY: Float, endX: Float, endY: Float, durationMs: Long) {
-        val path = Path().apply {
-            moveTo(startX, startY)
-            lineTo(endX, endY)
-        }
-        val stroke = GestureDescription.StrokeDescription(path, 0, durationMs)
-        val gesture = GestureDescription.Builder().addStroke(stroke).build()
-        dispatchGesture(gesture, null, null)
+        val ok = LocalAdbDriver.swipe(startX, startY, endX, endY, durationMs)
+        if (!ok) Log.w(TAG, "swipe via ADB failed (ADB on 127.0.0.1:5555 enabled?)")
     }
 }

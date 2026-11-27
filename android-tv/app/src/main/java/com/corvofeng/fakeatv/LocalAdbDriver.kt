@@ -9,6 +9,18 @@ import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
+/**
+ * Local ADB driver (mitv4a port).
+ *
+ * Connects to the TV's own adbd over loopback 127.0.0.1:5555 and executes
+ * `input` shell commands. On API 23 GestureDescription (dispatchGesture) is
+ * unavailable, so mouse-cursor tap/swipe are implemented here via
+ * `input tap` / `input swipe` instead.
+ *
+ * NOTE: key-button injection now goes through HttpKeyDriver (TVRemoteIME) so
+ * the remote works without manually re-enabling ADB after every reboot.
+ * This driver is retained specifically for cursor gestures.
+ */
 object LocalAdbDriver {
     private const val TAG = "LocalAdbDriver"
     private const val ADB_HOST = "127.0.0.1"
@@ -79,6 +91,41 @@ object LocalAdbDriver {
         isConnected.set(false)
     }
 
+    /** Execute a raw shell command on the device, reconnecting once on failure. */
+    private fun execShell(cmd: String): Boolean {
+        if (!isConnected.get()) {
+            if (!connectInternal()) return false
+        }
+        return synchronized(this) {
+            try {
+                val stream = shellStream ?: return false
+                stream.write("$cmd\n")
+                Log.d(TAG, "ADB shell: $cmd")
+                true
+            } catch (e: Exception) {
+                Log.w(TAG, "ADB shell error: ${e.message}, retrying with reconnect")
+                closeInternal()
+                if (connectInternal()) {
+                    try {
+                        shellStream?.write("$cmd\n")
+                        return true
+                    } catch (_: Exception) {}
+                }
+                false
+            }
+        }
+    }
+
+    /** Mouse-cursor single tap. Replaces GestureDescription (API 24+) on API 23. */
+    fun tap(x: Float, y: Float): Boolean {
+        return execShell("input tap ${x.toInt()} ${y.toInt()}")
+    }
+
+    /** Mouse-cursor swipe/drag. Replaces GestureDescription (API 24+) on API 23. */
+    fun swipe(startX: Float, startY: Float, endX: Float, endY: Float, durationMs: Long): Boolean {
+        return execShell("input swipe ${startX.toInt()} ${startY.toInt()} ${endX.toInt()} ${endY.toInt()} $durationMs")
+    }
+
     private val KEY_MAP = mapOf(
         "up" to "KEYCODE_DPAD_UP",
         "down" to "KEYCODE_DPAD_DOWN",
@@ -95,37 +142,13 @@ object LocalAdbDriver {
         "siri" to "KEYCODE_SEARCH"
     )
 
+    /** Kept for compatibility / optional use; primary button path is HttpKeyDriver. */
     fun sendKey(buttonName: String, isMappedToMenu: Boolean = false): Boolean {
         val keycode = if (isMappedToMenu) {
             "KEYCODE_MENU"
         } else {
             KEY_MAP[buttonName.lowercase()] ?: "KEYCODE_${buttonName.uppercase()}"
         }
-
-        if (!isConnected.get()) {
-            if (!connectInternal()) {
-                return false
-            }
-        }
-
-        return synchronized(this) {
-            try {
-                val stream = shellStream ?: return false
-                val cmd = "input keyevent $keycode\n"
-                stream.write(cmd)
-                Log.d(TAG, "ADB sent keyevent: $keycode")
-                true
-            } catch (e: Exception) {
-                Log.w(TAG, "Error writing to ADB shell stream: ${e.message}, will retry reconnection")
-                closeInternal()
-                if (connectInternal()) {
-                    try {
-                        shellStream?.write("input keyevent $keycode\n")
-                        return true
-                    } catch (_: Exception) {}
-                }
-                false
-            }
-        }
+        return execShell("input keyevent $keycode")
     }
 }

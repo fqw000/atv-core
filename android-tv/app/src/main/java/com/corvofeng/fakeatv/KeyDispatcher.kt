@@ -4,9 +4,10 @@ import android.content.Context
 import android.util.Log
 
 enum class InjectionMode(val key: String, val displayName: String) {
-    AUTO("auto", "自动自适应 (硬件 -> ADB -> 无障碍)"),
+    AUTO("auto", "自动自适应 (硬件 -> HTTP -> 无障碍)"),
+    HTTP("http", "仅 HTTP (TVRemoteIME 127.0.0.1:9978)"),
+    ADB("adb", "仅 ADB (本机 127.0.0.1:5555)"),
     EVENT("event", "仅硬件事件 (/dev/input)"),
-    ADB("adb", "仅本地 ADB (127.0.0.1:5555)"),
     A11Y("a11y", "仅无障碍服务 (Accessibility)");
 
     companion object {
@@ -33,21 +34,17 @@ object KeyDispatcher {
         val savedModeKey = DeviceInfo.getInjectionMode(context)
         currentMode = InjectionMode.fromKey(savedModeKey)
         menuBindingButton = DeviceInfo.getMenuButtonBinding(context)
+        HttpKeyDriver.init(context)
+        // mitv4a: ADB is initialized for mouse-cursor gestures (tap/swipe),
+        // which cannot use GestureDescription on API 23.
+        LocalAdbDriver.init(context)
         Log.i(TAG, "KeyDispatcher initialized: mode=$currentMode, menuBinding=$menuBindingButton")
-
-        // Pre-warm local ADB connection in background if mode is AUTO or ADB
-        if (currentMode == InjectionMode.AUTO || currentMode == InjectionMode.ADB) {
-            LocalAdbDriver.init(context)
-        }
     }
 
     fun setMode(context: Context, mode: InjectionMode) {
         currentMode = mode
         DeviceInfo.setInjectionMode(context, mode.key)
         Log.i(TAG, "InjectionMode updated to: $mode")
-        if (mode == InjectionMode.AUTO || mode == InjectionMode.ADB) {
-            LocalAdbDriver.init(context)
-        }
     }
 
     fun dispatchButton(name: String): String {
@@ -60,13 +57,13 @@ object KeyDispatcher {
 
         when (currentMode) {
             InjectionMode.AUTO -> {
-                // Tier 1: Hardware Event (/dev/input)
+                // Tier 1: Hardware Event (/dev/input) - only works on rooted boxes
                 if (RemoteController.isHardwareAvailable && RemoteController.sendKey(lowerName, isMappedToMenu)) {
                     executedEngine = "硬件事件驱动 (/dev/input)"
                 }
-                // Tier 2: Local ADB (127.0.0.1:5555)
-                else if (LocalAdbDriver.sendKey(lowerName, isMappedToMenu)) {
-                    executedEngine = "本地 ADB (127.0.0.1:5555)"
+                // Tier 2: HTTP /key to TVRemoteIME (mitv4a primary channel, no ADB needed)
+                else if (HttpKeyDriver.sendKey(lowerName, isMappedToMenu)) {
+                    executedEngine = "HTTP /key (TVRemoteIME)"
                 }
                 // Tier 3: Accessibility Service fallback
                 else if (AtvAccessibilityService.instance?.sendKey(lowerName, isMappedToMenu) == true) {
@@ -76,19 +73,27 @@ object KeyDispatcher {
                 }
             }
 
-            InjectionMode.EVENT -> {
-                if (RemoteController.sendKey(lowerName, isMappedToMenu)) {
-                    executedEngine = "硬件事件驱动"
+            InjectionMode.HTTP -> {
+                if (HttpKeyDriver.sendKey(lowerName, isMappedToMenu)) {
+                    executedEngine = "HTTP /key (TVRemoteIME)"
                 } else {
-                    executedEngine = "硬件驱动失败 (无权限或设备不存在)"
+                    executedEngine = "HTTP 失败 (TVRemoteIME 未运行?)"
                 }
             }
 
             InjectionMode.ADB -> {
                 if (LocalAdbDriver.sendKey(lowerName, isMappedToMenu)) {
-                    executedEngine = "本地 ADB"
+                    executedEngine = "ADB 驱动 (127.0.0.1:5555)"
                 } else {
-                    executedEngine = "本地 ADB 失败 (端口未连接或已关闭)"
+                    executedEngine = "ADB 失败 (需手动开启网络ADB)"
+                }
+            }
+
+            InjectionMode.EVENT -> {
+                if (RemoteController.sendKey(lowerName, isMappedToMenu)) {
+                    executedEngine = "硬件事件驱动"
+                } else {
+                    executedEngine = "硬件驱动失败 (miTV4A 未 root，此通道不可用)"
                 }
             }
 

@@ -162,15 +162,16 @@ class MainActivity : AppCompatActivity() {
         tvInjectionMode.text = "按键注入模式: ${mode.displayName}"
 
         val hwOk = RemoteController.isHardwareAvailable
-        val adbOk = LocalAdbDriver.isConnected.get()
+        val httpStr = HttpKeyDriver.describe()
         val accessOk = AtvAccessibilityService.isServiceRunning
+        val adbOk = LocalAdbDriver.isConnected.get()
 
         val hwStr = if (hwOk) "硬件[●可用]" else "硬件[○无]"
         val adbStr = if (adbOk) "ADB[●已连]" else "ADB[○断开]"
         val a11yStr = if (accessOk) "无障碍[●就绪]" else "无障碍[○关闭]"
         val lastUsed = KeyDispatcher.lastUsedEngine
 
-        tvDriverStatus.text = "通道: $hwStr | $adbStr | $a11yStr\n当前生效: $lastUsed"
+        tvDriverStatus.text = "按键: $hwStr | $httpStr | $a11yStr\n光标: $adbStr\n当前生效: $lastUsed"
         tvAccessibility.text = "无障碍状态: " + if (accessOk) "已开启 (可兜底)" else "未开启 (普通电视推荐开启)"
         tvAccessibility.setTextColor(if (accessOk) 0xFF4CAF50.toInt() else 0xFFFF9800.toInt())
     }
