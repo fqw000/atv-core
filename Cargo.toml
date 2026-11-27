@@ -6,6 +6,13 @@ members = ["crates/atv-core", "crates/atv-cli", "crates/atv-android"]
 edition = "2021"
 license = "MIT"
 
+# mitv4a: upstream if-addrs 0.13.4 calls libc::getifaddrs, a bionic symbol only
+# available on Android API 24+. On API 23 (MiTV4A) loading the .so fails with
+# `dlopen failed: cannot locate symbol "getifaddrs"`. Local patched copy uses
+# SIOCGIFCONF ioctl (available on all Android versions) on Android targets.
+[patch.crates-io]
+if-addrs = { path = "third_party/if-addrs" }
+
 [profile.release]
 opt-level = "z"
 lto = true

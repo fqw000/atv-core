@@ -1,10 +1,24 @@
 package com.corvofeng.fakeatv
 
 object AtvNative {
+    /** mitv4a: whether libatv_android.so was loaded successfully. */
+    @Volatile
+    var isLibraryLoaded: Boolean = false
+        private set
+
+    @Volatile
+    var loadError: String = ""
+        private set
+
     init {
         try {
             System.loadLibrary("atv_android")
+            isLibraryLoaded = true
         } catch (e: UnsatisfiedLinkError) {
+            // On API 23 the library can fail to load if a dependency symbol
+            // (e.g. getifaddrs) is missing. Keep the flag false so callers can
+            // skip native calls gracefully instead of crashing the process.
+            loadError = e.message ?: e.javaClass.simpleName
             e.printStackTrace()
         }
     }

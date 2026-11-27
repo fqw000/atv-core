@@ -224,6 +224,15 @@ class AtvService : Service(), AtvNative.Callback {
         }
 
         startThread = Thread {
+            // mitv4a: if the native library failed to load (e.g. a missing
+            // bionic symbol on API 23), do NOT call into it — that would throw
+            // UnsatisfiedLinkError on this thread and kill the whole process.
+            if (!AtvNative.isLibraryLoaded) {
+                Log.e(TAG, "Native library not loaded, cannot start server: ${AtvNative.loadError}")
+                broadcast("ServerStatus", "native_load_failed")
+                return@Thread
+            }
+
             var attempts = 0
             val maxAttempts = 60 // 60 attempts * 2.5s = 150 seconds (handles boot Wi-Fi delay)
             while (!isRunning && !isStopping && attempts < maxAttempts) {
@@ -233,7 +242,13 @@ class AtvService : Service(), AtvNative.Callback {
 
                 if (hasValidIp) {
                     Log.i(TAG, "Attempt $attempts: starting native server with IP $localIp (Name: $name, PIN: $pin)")
-                    val started = AtvNative.nativeStartServer(name, pin, deviceId, serverId, localIp!!, this)
+                    val started = try {
+                        AtvNative.nativeStartServer(name, pin, deviceId, serverId, localIp!!, this)
+                    } catch (e: Throwable) {
+                        // Defensive: never let a native error crash the process.
+                        Log.e(TAG, "nativeStartServer threw: ${e.message}", e)
+                        false
+                    }
                     if (started) {
                         isRunning = true
                         broadcast("ServerStatus", "running")
