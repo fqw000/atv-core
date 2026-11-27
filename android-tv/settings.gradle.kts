@@ -1,8 +1,8 @@
 pluginManagement {
     repositories {
-        maven { url = uri("https://maven.aliyun.com/repository/public") }
-        maven { url = uri("https://maven.aliyun.com/repository/google") }
-        maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
+        // mitv4a: dropped Aliyun mirrors - they intermittently return HTTP 502
+        // in GitHub Actions, and Gradle treats 5xx as a hard failure. Official
+        // sources are stable on CI runners.
         google()
         mavenCentral()
         gradlePluginPortal()
@@ -11,8 +11,6 @@ pluginManagement {
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
-        maven { url = uri("https://maven.aliyun.com/repository/public") }
-        maven { url = uri("https://maven.aliyun.com/repository/google") }
         google()
         mavenCentral()
     }
