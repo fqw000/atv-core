@@ -33,6 +33,21 @@ object LocalAdbDriver {
 
     val isConnected = AtomicBoolean(false)
 
+    // Throttled reconnect probe: ADB may be turned on after boot, so detect it
+    // within a few seconds without attempting a socket connect on every key press.
+    private var lastConnectAttemptMs = 0L
+    private const val RETRY_INTERVAL_MS = 5000L
+
+    fun isConnectedOrRetry(): Boolean {
+        if (isConnected.get()) return true
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastConnectAttemptMs >= RETRY_INTERVAL_MS) {
+            lastConnectAttemptMs = now
+            return connectInternal()
+        }
+        return false
+    }
+
     fun init(context: Context) {
         appContext = context.applicationContext
         initAsync()

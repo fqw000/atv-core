@@ -4,7 +4,7 @@ import android.content.Context
 import android.util.Log
 
 enum class InjectionMode(val key: String, val displayName: String) {
-    AUTO("auto", "自动自适应 (硬件 -> HTTP -> 无障碍)"),
+    AUTO("auto", "自动自适应 (ADB优先 -> HTTP -> 无障碍)"),
     HTTP("http", "仅 HTTP (TVRemoteIME 127.0.0.1:9978)"),
     ADB("adb", "仅 ADB (本机 127.0.0.1:5555)"),
     EVENT("event", "仅硬件事件 (/dev/input)"),
@@ -57,11 +57,12 @@ object KeyDispatcher {
 
         when (currentMode) {
             InjectionMode.AUTO -> {
-                // Tier 1: Hardware Event (/dev/input) - only works on rooted boxes
-                if (RemoteController.isHardwareAvailable && RemoteController.sendKey(lowerName, isMappedToMenu)) {
-                    executedEngine = "硬件事件驱动 (/dev/input)"
+                // Tier 1: ADB - preferred when available; also survives HTTP service crashes.
+                // isConnectedOrRetry probes with throttling so ADB opened after boot is detected.
+                if (LocalAdbDriver.isConnectedOrRetry() && LocalAdbDriver.sendKey(lowerName, isMappedToMenu)) {
+                    executedEngine = "ADB 驱动 (127.0.0.1:5555)"
                 }
-                // Tier 2: HTTP /key to TVRemoteIME (mitv4a primary channel, no ADB needed)
+                // Tier 2: HTTP /key to TVRemoteIME (works without ADB after reboot)
                 else if (HttpKeyDriver.sendKey(lowerName, isMappedToMenu)) {
                     executedEngine = "HTTP /key (TVRemoteIME)"
                 }
