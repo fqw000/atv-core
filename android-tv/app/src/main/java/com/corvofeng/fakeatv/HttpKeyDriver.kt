@@ -25,17 +25,22 @@ object HttpKeyDriver {
 
     /** iPhone Apple TV Remote button name -> Android keycode (TVRemoteIME /key). */
     private val KEY_MAP = mapOf(
-        "up" to 19,           // DPAD_UP
-        "down" to 20,         // DPAD_DOWN
-        "left" to 21,         // DPAD_LEFT
-        "right" to 22,        // DPAD_RIGHT
-        "select" to 23,       // DPAD_CENTER
-        "menu" to 4,          // BACK  (iOS remote's back button is named "menu" in atv-core)
-        "home" to 3,          // HOME
-        "volume_up" to 24,    // VOLUME_UP
-        "volume_down" to 25,  // VOLUME_DOWN
-        "play_pause" to 85,   // MEDIA_PLAY_PAUSE
-        "power" to 26         // POWER
+        "up" to 19,             // DPAD_UP
+        "down" to 20,           // DPAD_DOWN
+        "left" to 21,           // DPAD_LEFT
+        "right" to 22,          // DPAD_RIGHT
+        "select" to 23,         // DPAD_CENTER
+        "menu" to 4,            // BACK  (iOS remote's back button is named "menu" in atv-core)
+        "home" to 3,            // HOME
+        "volume_up" to 24,      // VOLUME_UP
+        "volume_down" to 25,    // VOLUME_DOWN
+        "mute" to 164,          // VOLUME_MUTE
+        "play_pause" to 85,     // MEDIA_PLAY_PAUSE
+        "channel_up" to 166,    // CHANNEL_UP   (iPhone remote CH▲)
+        "channel_down" to 167,  // CHANNEL_DOWN (iPhone remote CH▼)
+        "siri" to 84,           // SEARCH / VOICE_ASSIST
+        "guide" to 172,         // GUIDE
+        "power" to 26           // POWER
     )
 
     /** Keycode used when the user rebinds a button to Android MENU. */

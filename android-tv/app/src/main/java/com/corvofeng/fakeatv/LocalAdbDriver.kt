@@ -157,8 +157,11 @@ object LocalAdbDriver {
         "volume_up" to "KEYCODE_VOLUME_UP",
         "volume_down" to "KEYCODE_VOLUME_DOWN",
         "mute" to "KEYCODE_VOLUME_MUTE",
-        "power" to "KEYCODE_POWER",
-        "siri" to "KEYCODE_SEARCH"
+        "channel_up" to "KEYCODE_CHANNEL_UP",
+        "channel_down" to "KEYCODE_CHANNEL_DOWN",
+        "siri" to "KEYCODE_SEARCH",
+        "guide" to "KEYCODE_GUIDE",
+        "power" to "KEYCODE_POWER"
     )
 
     /** Kept for compatibility / optional use; primary button path is HttpKeyDriver. */

@@ -2,7 +2,7 @@ name: Build mitv4a Android TV APK
 
 on:
   push:
-    branches: [ "mitv4a" ]
+    branches: [ "mitv4a", "mitv4a-stable" ]
   workflow_dispatch:
 
 jobs:

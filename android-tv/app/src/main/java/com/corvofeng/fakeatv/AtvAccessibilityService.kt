@@ -115,6 +115,9 @@ class AtvAccessibilityService : AccessibilityService() {
             "volume_up" -> execInputKeyEvent("KEYCODE_VOLUME_UP")
             "volume_down" -> execInputKeyEvent("KEYCODE_VOLUME_DOWN")
             "mute" -> execInputKeyEvent("KEYCODE_VOLUME_MUTE")
+            "channel_up" -> execInputKeyEvent("KEYCODE_CHANNEL_UP")
+            "channel_down" -> execInputKeyEvent("KEYCODE_CHANNEL_DOWN")
+            "guide" -> execInputKeyEvent("KEYCODE_GUIDE")
             "siri" -> execInputKeyEvent("KEYCODE_SEARCH")
             else -> execInputKeyEvent("KEYCODE_${lowerName.uppercase()}")
         }

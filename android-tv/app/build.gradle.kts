@@ -12,8 +12,8 @@ android {
         // mitv4a: Android 6.0.1 / API 23. Leanback 1.0.0 needs API 21 at minimum.
         minSdk = 21
         targetSdk = 34
-        versionCode = 5
-        versionName = "1.5.0-mitv4a"
+        versionCode = 6
+        versionName = "1.5.1-mitv4a"
 
         ndk {
             abiFilters.addAll(listOf("arm64-v8a", "armeabi-v7a"))

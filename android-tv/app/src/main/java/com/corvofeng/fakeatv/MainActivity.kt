@@ -199,12 +199,18 @@ class MainActivity : AppCompatActivity() {
     private fun showMenuBindingDialog() {
         val options = arrayOf(
             "无 (默认: 保持原始按键功能)",
-            "播放/暂停 键 (play_pause, 推荐，位于左下角)",
-            "电视/Home 图标 键 (home, 位于右下角)",
-            "静音 键 (mute, 位于左上角)",
-            "返回 键 (menu, 位于底部中间)"
+            "播放/暂停 键 (play_pause)",
+            "电视/Home 图标 键 (home)",
+            "返回 键 (menu)",
+            "静音 键 (mute, 左上)",
+            "电源 键 (power, 右上)",
+            "CH 频道+ 键 (channel_up, 右下)",
+            "CH 频道- 键 (channel_down, 右下)"
         )
-        val values = arrayOf("none", "play_pause", "home", "mute", "menu")
+        val values = arrayOf(
+            "none", "play_pause", "home", "menu",
+            "mute", "power", "channel_up", "channel_down"
+        )
         val current = DeviceInfo.getMenuButtonBinding(this)
         val currentIndex = values.indexOf(current).let { if (it >= 0) it else 0 }
 
@@ -236,8 +242,11 @@ class MainActivity : AppCompatActivity() {
         return when (binding.lowercase()) {
             "play_pause" -> "播放/暂停 键 (play_pause)"
             "home" -> "电视/Home 图标 键 (home)"
-            "mute" -> "静音 键 (mute)"
             "menu" -> "返回 键 (menu)"
+            "mute" -> "静音 键 (mute)"
+            "power" -> "电源 键 (power)"
+            "channel_up" -> "CH 频道+ 键 (channel_up)"
+            "channel_down" -> "CH 频道- 键 (channel_down)"
             "none", "" -> "无 (默认)"
             else -> binding
         }
