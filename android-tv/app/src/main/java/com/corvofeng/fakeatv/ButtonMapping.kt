@@ -20,6 +20,11 @@ import android.content.Context
  */
 object ButtonMapping {
 
+    // Special action tokens — declared first so ACTIONS can reference them
+    // during property initialisation (object properties init in declaration order).
+    const val ACTION_NONE = "__NONE__"
+    const val ACTION_CLEAR_APPS = "ACTION_CLEAR_APPS"
+
     /** A button the iPhone remote can emit. */
     data class Button(
         val name: String,          // native name, e.g. "channel_up"
@@ -99,12 +104,9 @@ object ButtonMapping {
         "KEYCODE_WAKEUP" to "唤醒",
         "KEYCODE_DREAM" to "屏保",
         "KEYCODE_APP_SWITCH" to "最近任务 / 多任务",
-        "ACTION_CLEAR_APPS" to "清除后台 (最近任务→清全部)",
+        ACTION_CLEAR_APPS to "清除后台 (最近任务→清全部)",
         ACTION_NONE to "无操作 (屏蔽此键)",
     )
-
-    const val ACTION_NONE = "__NONE__"
-    const val ACTION_CLEAR_APPS = "ACTION_CLEAR_APPS"
 
     fun findButton(name: String): Button? =
         BUTTONS.find { it.name.equals(name, ignoreCase = true) }
