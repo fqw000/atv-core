@@ -1,12 +1,15 @@
 package com.corvofeng.fakeatv
 
 import android.content.Context
+import android.os.Environment
 import android.util.Log
 import dadb.AdbKeyPair
 import dadb.AdbShellStream
 import dadb.Dadb
 import java.io.File
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -26,10 +29,38 @@ object LocalAdbDriver {
     private const val ADB_HOST = "127.0.0.1"
     private const val ADB_PORT = 5555
 
+    // mitv4a v1.5.3: cap the blocking ADB handshake. dadb's openShell() reads
+    // AUTH responses with no socket timeout; when the local adbd never accepts
+    // our key the read blocks forever. A foreground/JNI-callback thread calling
+    // into us would then stall input dispatching and trigger an ANR. All connect
+    // attempts now run on a background thread with a hard timeout.
+    private const val CONNECT_TIMEOUT_MS = 2500L
+
+    // mitv4a v1.5.3: directories that may hold a PC-authorized adb keypair.
+    // On API 23 with legacy external storage, an app can read a direct File path
+    // under /sdcard/Download without READ_EXTERNAL_STORAGE. We also probe the
+    // app-private external dir (/sdcard/Android/data/<pkg>/files/adb) which needs
+    // no permission at all, then fall back to the legacy internal files/adb key.
+    private fun publicKeyDirs(context: Context?): List<File> {
+        val dirs = mutableListOf<File>()
+        try {
+            val external = Environment.getExternalStorageDirectory()
+            dirs.add(File(external, "Download"))
+            dirs.add(File(external, "Download/FakeAtv"))
+        } catch (_: Throwable) {}
+        if (context != null) {
+            context.getExternalFilesDir(null)?.let { dirs.add(File(it, "adb")) }
+        }
+        return dirs
+    }
+
     private val executor = Executors.newSingleThreadExecutor()
     private var appContext: Context? = null
-    private var dadbInstance: Dadb? = null
-    private var shellStream: AdbShellStream? = null
+    @Volatile private var dadbInstance: Dadb? = null
+    @Volatile private var shellStream: AdbShellStream? = null
+    // Incremented whenever a connect attempt is abandoned, so a worker that
+    // finishes late (after its socket was force-closed) cannot mark us connected.
+    @Volatile private var connectEpoch = 0
 
     val isConnected = AtomicBoolean(false)
 
@@ -43,7 +74,8 @@ object LocalAdbDriver {
         val now = android.os.SystemClock.elapsedRealtime()
         if (now - lastConnectAttemptMs >= RETRY_INTERVAL_MS) {
             lastConnectAttemptMs = now
-            return connectInternal()
+            // v1.5.3: never let the caller's thread block on the ADB handshake.
+            initAsync()
         }
         return false
     }
@@ -60,44 +92,101 @@ object LocalAdbDriver {
         }
     }
 
+    /**
+     * v1.5.3: resolve an ADB keypair, preferring a PC-authorized keypair that
+     * has already been accepted by the TV's adbd. This avoids the AUTH dialog
+     * entirely. Priority:
+     *   1) /sdcard/Download/adbkey{,.pub} (pushed from the paired PC)
+     *   2) /sdcard/Download/FakeAtv/adbkey{,.pub}
+     *   3) /sdcard/Android/data/<pkg>/files/adb/adbkey{,.pub}
+     *   4) internal files/adb/ (legacy self-generated key)
+     */
+    private fun resolveKeyPair(context: Context?): AdbKeyPair? {
+        if (context != null) {
+            for (dir in publicKeyDirs(context)) {
+                val priv = File(dir, "adbkey")
+                val pub = File(dir, "adbkey.pub")
+                if (priv.exists() && pub.exists()) {
+                    try {
+                        val keyPair = AdbKeyPair.read(priv, pub)
+                        Log.i(TAG, "Using public-directory ADB keypair from ${dir.absolutePath}")
+                        return keyPair
+                    } catch (e: Throwable) {
+                        Log.w(TAG, "Failed to read public ADB keypair at ${dir.absolutePath}: ${e.javaClass.simpleName}: ${e.message}")
+                    }
+                }
+            }
+            val keyDir = File(context.filesDir, "adb")
+            keyDir.mkdirs()
+            val privFile = File(keyDir, "adbkey")
+            val pubFile = File(keyDir, "adbkey.pub")
+            if (!privFile.exists() || !pubFile.exists()) {
+                Log.i(TAG, "Generating internal ADB keypair at ${keyDir.absolutePath}...")
+                AdbKeyPair.generate(privFile, pubFile)
+            }
+            return AdbKeyPair.read(privFile, pubFile)
+        }
+        return null
+    }
+
+    /**
+     * Performs the raw connect (may block inside dadb's AUTH readMessage).
+     * Must only be called from the background executor thread.
+     */
+    private fun connectOnce(epoch: Int): Boolean {
+        Log.i(TAG, "Attempting to connect to local ADB at $ADB_HOST:$ADB_PORT...")
+        val keyPair = resolveKeyPair(appContext)
+        val d = if (keyPair != null) {
+            Dadb.create(ADB_HOST, ADB_PORT, keyPair)
+        } else {
+            Dadb.create(ADB_HOST, ADB_PORT)
+        }
+        // Publish the instance before the blocking openShell() so a timeout in
+        // connectInternal() can close the socket and unblock this worker.
+        dadbInstance = d
+        val stream = d.openShell()
+        if (epoch != connectEpoch) {
+            // This attempt was already abandoned/timed out; do not publish.
+            try { stream.close() } catch (_: Exception) {}
+            return false
+        }
+        shellStream = stream
+        isConnected.set(true)
+        Log.i(TAG, "Successfully connected to local ADB daemon!")
+        return true
+    }
+
     @Synchronized
     fun connectInternal(): Boolean {
         if (isConnected.get() && shellStream != null) {
             return true
         }
         closeInternal()
-        try {
-            Log.i(TAG, "Attempting to connect to local ADB at $ADB_HOST:$ADB_PORT...")
-            val context = appContext
-            val d = if (context != null) {
-                val keyDir = File(context.filesDir, "adb")
-                keyDir.mkdirs()
-                val privFile = File(keyDir, "adbkey")
-                val pubFile = File(keyDir, "adbkey.pub")
-                if (!privFile.exists() || !pubFile.exists()) {
-                    Log.i(TAG, "Generating internal ADB keypair at $keyDir...")
-                    AdbKeyPair.generate(privFile, pubFile)
-                }
-                val keyPair = AdbKeyPair.read(privFile, pubFile)
-                Dadb.create(ADB_HOST, ADB_PORT, keyPair)
-            } else {
-                Dadb.create(ADB_HOST, ADB_PORT)
-            }
+        val myEpoch = connectEpoch
 
-            val stream = d.openShell()
-            dadbInstance = d
-            shellStream = stream
-            isConnected.set(true)
-            Log.i(TAG, "Successfully connected to local ADB daemon!")
-            return true
+        // v1.5.3: bound the blocking handshake on a dedicated worker so a stalled
+        // adbd can never wedge the shared executor or (worse) a JNI callback.
+        val worker = Executors.newSingleThreadExecutor()
+        try {
+            val future = worker.submit { connectOnce(myEpoch) }
+            val ok = try {
+                future.get(CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            } catch (e: TimeoutException) {
+                Log.w(TAG, "ADB connect timed out after ${CONNECT_TIMEOUT_MS}ms (AUTH handshake stalled)")
+                connectEpoch++ // invalidate any late completion from this worker
+                future.cancel(true)
+                false
+            }
+            if (!ok) closeInternal()
+            return ok
         } catch (e: Throwable) {
-            // mitv4a: catch Throwable (not just Exception) because dadb's key
-            // generation can throw NoClassDefFoundError / UnsatisfiedLinkError
-            // on API 23 if a Java 8+ class or native symbol is unavailable.
-            // An Error escaping this executor thread would kill the whole app.
+            // catch Throwable: dadb key generation can throw NoClassDefFoundError /
+            // UnsatisfiedLinkError on API 23; an escaping Error would kill the app.
             Log.w(TAG, "Failed to connect to local ADB ($ADB_HOST:$ADB_PORT): ${e.javaClass.simpleName}: ${e.message}")
             closeInternal()
             return false
+        } finally {
+            worker.shutdownNow()
         }
     }
 
@@ -110,26 +199,28 @@ object LocalAdbDriver {
         isConnected.set(false)
     }
 
-    /** Execute a raw shell command on the device, reconnecting once on failure. */
+    /**
+     * Execute a raw shell command on the device.
+     * v1.5.3: never block the calling thread on the ADB handshake. If the shell
+     * is not ready we kick off an async (timeout-bounded) connect and return
+     * false immediately. This keeps JNI input callbacks responsive and prevents
+     * the "connected then instantly drops / ANR" symptom on MiTV4A.
+     */
     private fun execShell(cmd: String): Boolean {
         if (!isConnected.get()) {
-            if (!connectInternal()) return false
+            initAsync()
+            return false
         }
         return synchronized(this) {
             try {
-                val stream = shellStream ?: return false
+                val stream = shellStream ?: return@synchronized false
                 stream.write("$cmd\n")
                 Log.d(TAG, "ADB shell: $cmd")
                 true
             } catch (e: Exception) {
-                Log.w(TAG, "ADB shell error: ${e.message}, retrying with reconnect")
+                Log.w(TAG, "ADB shell error: ${e.message}, scheduling reconnect")
                 closeInternal()
-                if (connectInternal()) {
-                    try {
-                        shellStream?.write("$cmd\n")
-                        return true
-                    } catch (_: Exception) {}
-                }
+                initAsync()
                 false
             }
         }
