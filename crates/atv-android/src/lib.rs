@@ -307,6 +307,20 @@ pub extern "system" fn Java_com_corvofeng_fakeatv_AtvNative_nativeStartServer(
     config.name = device_name;
     config.pin = pin as u32;
     config.device_id = device_id_str;
+
+    // mitv4a v1.5.0: derive a STABLE signing key from the persistent server
+    // identifier that Kotlin passes in (derived from the device MAC and stored
+    // in device-protected prefs). AtvConfig::default() generates a random UUID
+    // on Android (no $HOME) and derives private_key from it, which changed on
+    // every app restart and made the iPhone reject the saved pairing key
+    // (pair-verify failure -> "cannot connect"). Overriding server_identifier
+    // alone was not enough because private_key was already Some(random).
+    if let Some(ref sid) = server_id_str {
+        config.private_key = Some(atv_core::identity::derive_private_key(sid));
+        let fp = &config.private_key.as_ref().unwrap()[..4];
+        info!("stable signing key derived from server id {} (fingerprint {:02X}{:02X}{:02X}{:02X})",
+            sid, fp[0], fp[1], fp[2], fp[3]);
+    }
     config.server_identifier = server_id_str;
     if let Some(ref s) = local_ip_str {
         if let Ok(ip) = s.parse::<Ipv4Addr>() {
