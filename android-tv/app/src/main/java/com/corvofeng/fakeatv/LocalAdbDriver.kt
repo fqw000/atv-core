@@ -36,13 +36,19 @@ object LocalAdbDriver {
     // attempts now run on a background thread with a hard timeout.
     private const val CONNECT_TIMEOUT_MS = 2500L
 
-    // mitv4a v1.5.3: directories that may hold a PC-authorized adb keypair.
-    // On API 23 with legacy external storage, an app can read a direct File path
-    // under /sdcard/Download without READ_EXTERNAL_STORAGE. We also probe the
-    // app-private external dir (/sdcard/Android/data/<pkg>/files/adb) which needs
-    // no permission at all, then fall back to the legacy internal files/adb key.
+    // mitv4a v1.5.4: directories that may hold a PC-authorized adb keypair.
+    // Priority matters:
+    //   1) /data/local/tmp/fakeatv-adb — adb push lands here as 0644 shell:shell,
+    //      and the path chain is traversable by the app UID, so this is readable
+    //      without any storage permission. Files under /sdcard/ pushed via adb
+    //      are forced to 0660 root:sdcard_rw by the FUSE layer and chmod is a
+    //      no-op there, which is why the Download candidates always EACCES.
+    //   2) /sdcard/Download{,/FakeAtv} — legacy layout from the handover doc.
+    //   3) app-private external dir (/sdcard/Android/data/<pkg>/files/adb).
+    // Falls back to the legacy internal self-generated files/adb key.
     private fun publicKeyDirs(context: Context?): List<File> {
         val dirs = mutableListOf<File>()
+        dirs.add(File("/data/local/tmp/fakeatv-adb"))
         try {
             val external = Environment.getExternalStorageDirectory()
             dirs.add(File(external, "Download"))
@@ -93,13 +99,14 @@ object LocalAdbDriver {
     }
 
     /**
-     * v1.5.3: resolve an ADB keypair, preferring a PC-authorized keypair that
+     * v1.5.4: resolve an ADB keypair, preferring a PC-authorized keypair that
      * has already been accepted by the TV's adbd. This avoids the AUTH dialog
      * entirely. Priority:
-     *   1) /sdcard/Download/adbkey{,.pub} (pushed from the paired PC)
-     *   2) /sdcard/Download/FakeAtv/adbkey{,.pub}
-     *   3) /sdcard/Android/data/<pkg>/files/adb/adbkey{,.pub}
-     *   4) internal files/adb/ (legacy self-generated key)
+     *   1) /data/local/tmp/fakeatv-adb/adbkey{,.pub} (readable, adb-pushed)
+     *   2) /sdcard/Download/adbkey{,.pub} (pushed from the paired PC)
+     *   3) /sdcard/Download/FakeAtv/adbkey{,.pub}
+     *   4) /sdcard/Android/data/<pkg>/files/adb/adbkey{,.pub}
+     *   5) internal files/adb/ (legacy self-generated key)
      */
     private fun resolveKeyPair(context: Context?): AdbKeyPair? {
         if (context != null) {
