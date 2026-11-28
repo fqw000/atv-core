@@ -212,16 +212,19 @@ object LocalAdbDriver {
             return false
         }
         return synchronized(this) {
-            try {
-                val stream = shellStream ?: return@synchronized false
-                stream.write("$cmd\n")
-                Log.d(TAG, "ADB shell: $cmd")
-                true
-            } catch (e: Exception) {
-                Log.w(TAG, "ADB shell error: ${e.message}, scheduling reconnect")
-                closeInternal()
-                initAsync()
-                false
+            val stream = shellStream
+            when {
+                stream == null -> false
+                else -> try {
+                    stream.write("$cmd\n")
+                    Log.d(TAG, "ADB shell: $cmd")
+                    true
+                } catch (e: Exception) {
+                    Log.w(TAG, "ADB shell error: ${e.message}, scheduling reconnect")
+                    closeInternal()
+                    initAsync()
+                    false
+                }
             }
         }
     }
