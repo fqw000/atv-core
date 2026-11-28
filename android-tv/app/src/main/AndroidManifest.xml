@@ -40,8 +40,15 @@
             </intent-filter>
         </activity>
 
+        <!--
+          A2: run the receiver/service in its own process so that swiping the
+          MainActivity task away (remove task) does not kill the mDNS/Companion
+          server or drop the iPhone's TCP connection. The UI process only
+          starts/stops it and observes broadcasts.
+        -->
         <service
             android:name=".AtvService"
+            android:process=":atv"
             android:enabled="true"
             android:exported="false"
             android:directBootAware="true"

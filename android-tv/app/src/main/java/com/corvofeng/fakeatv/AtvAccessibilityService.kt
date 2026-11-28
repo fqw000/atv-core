@@ -44,8 +44,9 @@ class AtvAccessibilityService : AccessibilityService() {
             Log.i(TAG, "Screen resolution: ${screenWidth}x${screenHeight}")
         }
 
-        // Auto-start AtvService if not already running
-        if (!AtvService.isRunning) {
+        // Auto-start AtvService if not already running (cross-process query:
+        // AtvService runs in ":atv" since v1.5.5).
+        if (!AtvService.isRunningInApp(this)) {
             val deviceName = DeviceInfo.getDeviceName(this)
             val serviceIntent = Intent(this, AtvService::class.java).apply {
                 action = AtvService.ACTION_START

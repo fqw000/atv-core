@@ -3,6 +3,7 @@ package com.corvofeng.fakeatv
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.ActivityManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.BroadcastReceiver
@@ -29,17 +30,38 @@ class AtvService : Service(), AtvNative.Callback {
         const val ACTION_START = "com.corvofeng.fakeatv.ACTION_START"
         const val ACTION_STOP = "com.corvofeng.fakeatv.ACTION_STOP"
         const val ACTION_SET_MENU_BINDING = "com.corvofeng.fakeatv.SET_MENU_BINDING"
+        const val ACTION_SET_INJECTION_MODE = "com.corvofeng.fakeatv.SET_INJECTION_MODE"
         const val BROADCAST_EVENT = "com.corvofeng.fakeatv.EVENT_BROADCAST"
 
         const val EXTRA_NAME = "extra_name"
         const val EXTRA_PIN = "extra_pin"
         const val EXTRA_BUTTON = "extra_button"
+        const val EXTRA_MODE = "extra_mode"
         const val EXTRA_EVENT_TYPE = "extra_event_type"
         const val EXTRA_EVENT_DETAIL = "extra_event_detail"
 
+        // Process-local state, valid only inside the :atv process.
         @Volatile
         var isRunning = false
             private set
+
+        /**
+         * A2: AtvService lives in the separate ":atv" process, so [isRunning]
+         * in the caller's process is always false. Query the system for the
+         * actual service process instead. Works on API 23+ for own-package
+         * services (getRunningServices returns at least the caller's services).
+         */
+        fun isRunningInApp(context: Context): Boolean {
+            return try {
+                val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+                    ?: return false
+                val list = am.getRunningServices(64)
+                list.any { it.service.className == AtvService::class.java.name }
+            } catch (e: Exception) {
+                Log.w(TAG, "isRunningInApp failed: ${e.message}", e)
+                false
+            }
+        }
     }
 
     private var multicastLock: WifiManager.MulticastLock? = null
@@ -80,6 +102,19 @@ class AtvService : Service(), AtvNative.Callback {
         AtvAccessibilityService.instance?.menuBindingButton = lower
         Log.i(TAG, "Applied menu button binding: $lower")
         broadcast("MenuBinding", lower)
+    }
+
+    /**
+     * A2: the injection mode is selected in MainActivity (main process) but
+     * consumed here in the :atv process. Apply it to this process's KeyDispatcher
+     * and persist it so restarts keep the choice.
+     */
+    private fun applyInjectionMode(modeKey: String) {
+        val mode = InjectionMode.fromKey(modeKey)
+        DeviceInfo.setInjectionMode(this, mode.key)
+        KeyDispatcher.currentMode = mode
+        Log.i(TAG, "Applied injection mode: $mode")
+        broadcast("InjectionMode", mode.displayName)
     }
 
     private fun protectProcess() {
@@ -131,6 +166,11 @@ class AtvService : Service(), AtvNative.Callback {
                         applyMenuBinding(btn)
                         return
                     }
+                    if (action == ACTION_SET_INJECTION_MODE) {
+                        val mode = intent.getStringExtra(EXTRA_MODE) ?: "auto"
+                        applyInjectionMode(mode)
+                        return
+                    }
                     if (!isRunning && !isStopping) {
                         val name = currentName ?: DeviceInfo.getDeviceName(this@AtvService)
                         startServer(name, currentPin)
@@ -141,6 +181,7 @@ class AtvService : Service(), AtvNative.Callback {
                 addAction(Intent.ACTION_SCREEN_ON)
                 addAction(Intent.ACTION_USER_PRESENT)
                 addAction(ACTION_SET_MENU_BINDING)
+                addAction(ACTION_SET_INJECTION_MODE)
             }
             registerReceiver(receiver, filter)
             screenReceiver = receiver
@@ -167,6 +208,10 @@ class AtvService : Service(), AtvNative.Callback {
                     ?: intent.getStringExtra("button")
                     ?: "none"
                 applyMenuBinding(btn)
+            }
+            ACTION_SET_INJECTION_MODE -> {
+                val mode = intent.getStringExtra(EXTRA_MODE) ?: "auto"
+                applyInjectionMode(mode)
             }
             else -> {
                 val name = intent?.getStringExtra(EXTRA_NAME) ?: DeviceInfo.getDeviceName(this)

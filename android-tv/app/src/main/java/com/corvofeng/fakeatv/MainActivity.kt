@@ -5,12 +5,17 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Color
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.text.format.Formatter
+import android.view.Gravity
+import android.view.KeyEvent
+import android.view.ViewGroup
 import android.widget.Button
+import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -32,6 +37,18 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnInjectionMode: Button
 
     private val logEntries = mutableListOf<String>()
+
+    // --- B fix: in-activity config sheet (no separate dialog window) -----------
+    // Root cause: an AlertDialog creates a second window that steals focus on
+    // MiTV4A; keys injected by TVRemoteIME (deviceId=-1) are then delivered to
+    // the no-longer-focused main window and dropped by ViewRootImpl ("no window
+    // focus"). Rendering the chooser as a view inside this Activity keeps a
+    // single focused window, so both injected keys and the IR remote work.
+    private var configSheet: FrameLayout? = null
+    private var configRows = mutableListOf<TextView>()
+    private var configItems: List<String> = emptyList()
+    private var configSelected = 0
+    private var configOnSelect: ((Int) -> Unit)? = null
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -62,15 +79,15 @@ class MainActivity : AppCompatActivity() {
         btnInjectionMode = findViewById(R.id.btnInjectionMode)
 
         btnMenuBinding.setOnClickListener {
-            showMenuBindingDialog()
+            showMenuBindingSheet()
         }
 
         btnInjectionMode.setOnClickListener {
-            showInjectionModeDialog()
+            showInjectionModeSheet()
         }
 
         btnToggle.setOnClickListener {
-            if (AtvService.isRunning) {
+            if (AtvService.isRunningInApp(this)) {
                 val intent = Intent(this, AtvService::class.java).apply {
                     action = AtvService.ACTION_STOP
                 }
@@ -107,8 +124,8 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Auto-start service on app launch
-        if (!AtvService.isRunning) {
+        // Auto-start service on app launch (cross-process query after :atv split)
+        if (!AtvService.isRunningInApp(this)) {
             startAtvService()
         }
     }
@@ -129,6 +146,130 @@ class MainActivity : AppCompatActivity() {
         unregisterReceiver(receiver)
     }
 
+    override fun onDestroy() {
+        dismissConfigSheet()
+        super.onDestroy()
+    }
+
+    /**
+     * Single-window key handling for the in-activity config chooser.
+     * Consumes navigation keys while the sheet is open so they never leak to
+     * the underlying buttons; both injected keys and the IR remote arrive here.
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (configSheet == null) return super.dispatchKeyEvent(event)
+        val down = event.action == KeyEvent.ACTION_DOWN
+        when (event.keyCode) {
+            KeyEvent.KEYCODE_DPAD_UP -> { if (down) moveConfigSelection(-1); return true }
+            KeyEvent.KEYCODE_DPAD_DOWN -> { if (down) moveConfigSelection(1); return true }
+            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> return true
+            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                if (down) commitConfigSelection()
+                return true
+            }
+            KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_MENU -> {
+                if (down) dismissConfigSheet()
+                return true
+            }
+            else -> return true // swallow while the chooser is open
+        }
+    }
+
+    private fun moveConfigSelection(delta: Int) {
+        if (configItems.isEmpty()) return
+        configSelected = (configSelected + delta).coerceIn(0, configItems.size - 1)
+        refreshConfigHighlight()
+    }
+
+    private fun refreshConfigHighlight() {
+        configRows.forEachIndexed { i, tv ->
+            val selected = i == configSelected
+            tv.text = (if (selected) "▶ " else "    ") + configItems[i]
+            tv.setTextColor(if (selected) 0xFF81D4FA.toInt() else 0xFFCFD8DC.toInt())
+            tv.setBackgroundColor(if (selected) 0xFF37474F.toInt() else Color.TRANSPARENT)
+        }
+    }
+
+    private fun commitConfigSelection() {
+        val cb = configOnSelect ?: return
+        val idx = configSelected
+        dismissConfigSheet()
+        cb(idx)
+    }
+
+    private fun dismissConfigSheet() {
+        configSheet?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        configSheet = null
+        configRows.clear()
+        configOnSelect = null
+    }
+
+    private fun showConfigSheet(
+        title: String,
+        items: Array<String>,
+        currentIndex: Int,
+        onSelect: (Int) -> Unit
+    ) {
+        dismissConfigSheet()
+        configItems = items.toList()
+        configSelected = currentIndex.coerceIn(0, items.size - 1)
+        configOnSelect = onSelect
+
+        val ctx = this
+        val sheet = FrameLayout(ctx).apply {
+            setBackgroundColor(0xCC000000.toInt())
+            isClickable = true
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            setOnClickListener { dismissConfigSheet() }
+        }
+        val card = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFF212121.toInt())
+            setPadding(48, 36, 48, 36)
+            minimumWidth = 620
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            ).apply { setMargins(80, 80, 80, 80) }
+            setOnClickListener { } // consume, do not dismiss when tapping the card
+        }
+        val titleView = TextView(ctx).apply {
+            text = title
+            textSize = 20f
+            setTextColor(0xFFFFFFFF.toInt())
+            setPadding(0, 0, 0, 24)
+        }
+        card.addView(titleView)
+
+        configRows.clear()
+        items.forEachIndexed { i, label ->
+            val row = TextView(ctx).apply {
+                textSize = 16f
+                setPadding(24, 14, 24, 14)
+                setOnClickListener { configSelected = i; commitConfigSelection() }
+            }
+            configRows.add(row)
+            card.addView(row)
+        }
+
+        val hint = TextView(ctx).apply {
+            text = "方向键选择  •  确认键应用  •  返回键取消"
+            textSize = 13f
+            setTextColor(0xFF90A4AE.toInt())
+            setPadding(0, 24, 0, 0)
+        }
+        card.addView(hint)
+
+        sheet.addView(card)
+        addContentView(sheet, sheet.layoutParams)
+        configSheet = sheet
+        refreshConfigHighlight()
+    }
+
     private fun startAtvService() {
         val deviceName = DeviceInfo.getDeviceName(this)
         val intent = Intent(this, AtvService::class.java).apply {
@@ -144,7 +285,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateUi() {
-        val running = AtvService.isRunning
+        val running = AtvService.isRunningInApp(this)
         val deviceName = DeviceInfo.getDeviceName(this)
         val deviceId = DeviceInfo.getDeviceId(this)
         tvStatus.text = if (running) "$deviceName: Running" else "$deviceName: Stopped"
@@ -176,27 +317,28 @@ class MainActivity : AppCompatActivity() {
         tvAccessibility.setTextColor(if (accessOk) 0xFF4CAF50.toInt() else 0xFFFF9800.toInt())
     }
 
-    private fun showInjectionModeDialog() {
+    private fun showInjectionModeSheet() {
         val modes = InjectionMode.values()
         val options = modes.map { it.displayName }.toTypedArray()
         val current = KeyDispatcher.currentMode
         val currentIndex = modes.indexOf(current).let { if (it >= 0) it else 0 }
 
-        AlertDialog.Builder(this)
-            .setTitle("选择按键注入模式 (优先策略)")
-            .setSingleChoiceItems(options, currentIndex) { dialog, which ->
-                val selected = modes[which]
-                KeyDispatcher.setMode(this, selected)
-                appendLog("[Config] 按键注入模式: ${selected.displayName}")
-                updateUi()
-                Toast.makeText(this, "已切换: ${selected.displayName}", Toast.LENGTH_SHORT).show()
-                dialog.dismiss()
+        showConfigSheet("选择按键注入模式 (优先策略)", options, currentIndex) { which ->
+            val selected = modes[which]
+            KeyDispatcher.setMode(this, selected)
+            // Sync the mode into the :atv service process (A2: separate process).
+            val intent = Intent(this, AtvService::class.java).apply {
+                action = AtvService.ACTION_SET_INJECTION_MODE
+                putExtra(AtvService.EXTRA_MODE, selected.key)
             }
-            .setNegativeButton("取消", null)
-            .show()
+            startService(intent)
+            appendLog("[Config] 按键注入模式: ${selected.displayName}")
+            updateUi()
+            Toast.makeText(this, "已切换: ${selected.displayName}", Toast.LENGTH_SHORT).show()
+        }
     }
 
-    private fun showMenuBindingDialog() {
+    private fun showMenuBindingSheet() {
         val options = arrayOf(
             "无 (默认: 保持原始按键功能)",
             "播放/暂停 键 (play_pause)",
@@ -214,28 +356,23 @@ class MainActivity : AppCompatActivity() {
         val current = DeviceInfo.getMenuButtonBinding(this)
         val currentIndex = values.indexOf(current).let { if (it >= 0) it else 0 }
 
-        AlertDialog.Builder(this)
-            .setTitle("绑定遥控器按键为 Android Menu 键")
-            .setSingleChoiceItems(options, currentIndex) { dialog, which ->
-                val selected = values[which]
-                DeviceInfo.setMenuButtonBinding(this, selected)
-                RemoteController.menuBindingButton = selected
-                AtvAccessibilityService.instance?.menuBindingButton = selected
+        showConfigSheet("绑定遥控器按键为 Android Menu 键", options, currentIndex) { which ->
+            val selected = values[which]
+            DeviceInfo.setMenuButtonBinding(this, selected)
+            RemoteController.menuBindingButton = selected
+            AtvAccessibilityService.instance?.menuBindingButton = selected
 
-                // Notify running AtvService
-                val intent = Intent(this, AtvService::class.java).apply {
-                    action = AtvService.ACTION_SET_MENU_BINDING
-                    putExtra(AtvService.EXTRA_BUTTON, selected)
-                }
-                startService(intent)
-
-                appendLog("[Config] Menu 键绑定: ${options[which]}")
-                updateUi()
-                Toast.makeText(this, "已设置: ${options[which]}", Toast.LENGTH_SHORT).show()
-                dialog.dismiss()
+            // Notify running AtvService (cross-process via startService)
+            val intent = Intent(this, AtvService::class.java).apply {
+                action = AtvService.ACTION_SET_MENU_BINDING
+                putExtra(AtvService.EXTRA_BUTTON, selected)
             }
-            .setNegativeButton("取消", null)
-            .show()
+            startService(intent)
+
+            appendLog("[Config] Menu 键绑定: ${options[which]}")
+            updateUi()
+            Toast.makeText(this, "已设置: ${options[which]}", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun getMenuBindingDisplayName(binding: String): String {
