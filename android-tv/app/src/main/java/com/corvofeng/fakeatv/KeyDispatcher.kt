@@ -57,14 +57,20 @@ object KeyDispatcher {
 
         when (currentMode) {
             InjectionMode.AUTO -> {
-                // Tier 1: ADB - preferred when available; also survives HTTP service crashes.
-                // isConnectedOrRetry probes with throttling so ADB opened after boot is detected.
-                if (LocalAdbDriver.isConnectedOrRetry() && LocalAdbDriver.sendKey(lowerName, isMappedToMenu)) {
-                    executedEngine = "ADB 驱动 (127.0.0.1:5555)"
-                }
-                // Tier 2: HTTP /key to TVRemoteIME (works without ADB after reboot)
-                else if (HttpKeyDriver.sendKey(lowerName, isMappedToMenu)) {
+                // mitv4a v1.5.2: HTTP first.
+                // The local-ADB probe / shell write runs synchronously on the JNI
+                // callback thread. When an adb session is active (e.g. `adb logcat`
+                // streaming over WiFi), that probe can block and swallow the whole
+                // button dispatch — native emitted `on_button` but Java never logged
+                // `onButton`. TVRemoteIME /key is the proven path on MiTV4A and works
+                // after reboot without ADB, so try it first and only fall back to ADB.
+                // Tier 1: HTTP /key to TVRemoteIME (works without ADB after reboot)
+                if (HttpKeyDriver.sendKey(lowerName, isMappedToMenu)) {
                     executedEngine = "HTTP /key (TVRemoteIME)"
+                }
+                // Tier 2: ADB (retained for cursor gestures; button fallback)
+                else if (LocalAdbDriver.isConnectedOrRetry() && LocalAdbDriver.sendKey(lowerName, isMappedToMenu)) {
+                    executedEngine = "ADB 驱动 (127.0.0.1:5555)"
                 }
                 // Tier 3: Accessibility Service fallback
                 else if (AtvAccessibilityService.instance?.sendKey(lowerName, isMappedToMenu) == true) {

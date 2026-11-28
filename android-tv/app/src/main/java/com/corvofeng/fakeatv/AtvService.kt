@@ -309,6 +309,9 @@ class AtvService : Service(), AtvNative.Callback {
     }
 
     override fun onButton(name: String) {
+        // v1.5.2: log at method entry so a blocked/failed dispatch is visible.
+        // Native `on_button` alone is not enough to prove Java received it.
+        Log.i(TAG, "onButton enter: $name")
         val lowerName = name.lowercase().trim()
         val isMapped = KeyDispatcher.menuBindingButton.isNotBlank() &&
                 KeyDispatcher.menuBindingButton != "none" &&
