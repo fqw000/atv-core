@@ -169,8 +169,8 @@ object LocalAdbDriver {
         val worker = Executors.newSingleThreadExecutor()
         try {
             val future = worker.submit { connectOnce(myEpoch) }
-            val ok = try {
-                future.get(CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            val ok: Boolean = try {
+                future.get(CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS) == true
             } catch (e: TimeoutException) {
                 Log.w(TAG, "ADB connect timed out after ${CONNECT_TIMEOUT_MS}ms (AUTH handshake stalled)")
                 connectEpoch++ // invalidate any late completion from this worker
