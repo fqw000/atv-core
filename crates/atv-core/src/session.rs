@@ -1,8 +1,10 @@
 //! Companion Link session: pairing, verification and the encrypted control
 //! channel. Ported from `fake_atv.py`'s `CompanionSession`.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::{Signer, SigningKey};
 use tokio::io::AsyncWriteExt;
@@ -29,6 +31,12 @@ pub const MEDIA_CONTROL_VOLUME: u64 = 0x0100;
 
 const SWIPE_MIN_DISTANCE: f64 = 150.0; // touchpad units; the surface is 1000x1000
 const TAP_MAX_DISTANCE: f64 = 60.0; // below this a touch sequence counts as a tap
+
+// mitv4a v1.6.0: button gesture detection thresholds.
+// iPhone's HID report carries `_hBtS` 1=down / 2=up. We time the hold and
+// the gap between consecutive ups to classify long / double presses.
+const LONG_PRESS_MS: u128 = 500; // held >= 500ms => "long"
+const DOUBLE_TAP_WINDOW_MS: u128 = 320; // two ups within 320ms => "double"
 
 /// Fixed `altIRK` value from `fake_atv._pair_setup_m5`.
 const ALT_IRK: [u8; 16] = [
@@ -65,6 +73,14 @@ fn hid_command_name(command: u64) -> String {
     }
 }
 
+/// mitv4a v1.6.0: monotonic-ish wall clock in milliseconds for gesture timing.
+fn now_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}
+
 /// One Companion connection's state machine.
 pub struct CompanionSession {
     writer: SharedWriter,
@@ -99,6 +115,13 @@ pub struct CompanionSession {
     peer_ip: String,
     device_id: Option<String>,
     timeout_deadline: Arc<Mutex<Option<tokio::time::Instant>>>,
+    // mitv4a v1.6.0: gesture detection state.
+    // button_down_at: wall-clock (ms) of the last `_hBtS==1` per button name.
+    // button_last_up_at: wall-clock (ms) of the last button-up per name, used
+    // to detect a double tap. A tap consumed as the first half of a double is
+    // cleared so a triple tap doesn't produce overlapping doubles.
+    button_down_at: HashMap<String, u128>,
+    button_last_up_at: HashMap<String, u128>,
 }
 
 impl CompanionSession {
@@ -155,11 +178,40 @@ impl CompanionSession {
             peer_ip,
             device_id: None,
             timeout_deadline: Arc::new(Mutex::new(None)),
+            button_down_at: HashMap::new(),
+            button_last_up_at: HashMap::new(),
         }
     }
 
     pub fn is_established(&self) -> bool {
         self.session_established.load(Ordering::SeqCst)
+    }
+
+    /// mitv4a v1.6.0: classify a button-up into click / long / double.
+    /// Called from handle_hid_command on `_hBtS == 2`.
+    fn classify_gesture(&mut self, name: &str) -> &'static str {
+        let now = now_millis();
+        // Long press: time between the matching down (==1) and this up (==2).
+        let held_ms = self.button_down_at
+            .remove(name)
+            .map(|down| now.saturating_sub(down))
+            .unwrap_or(0);
+        // Double tap: two ups of the same button within the window.
+        let since_last = self.button_last_up_at
+            .get(name)
+            .map(|last| now.saturating_sub(*last));
+
+        if held_ms >= LONG_PRESS_MS {
+            // Consume the pending up so a later tap isn't misread as double.
+            self.button_last_up_at.remove(name);
+            "long"
+        } else if since_last.map(|d| d <= DOUBLE_TAP_WINDOW_MS).unwrap_or(false) {
+            self.button_last_up_at.remove(name);
+            "double"
+        } else {
+            self.button_last_up_at.insert(name.to_string(), now);
+            "click"
+        }
     }
 
     pub fn timeout_deadline(&self) -> Arc<Mutex<Option<tokio::time::Instant>>> {
@@ -826,10 +878,20 @@ impl CompanionSession {
         let command_name = hid_command_name(command);
         self.send_response(xid, None, 0).await?;
 
+        // mitv4a v1.6.0: record the button-down timestamp. The iPhone sends
+        // `_hBtS` 1 on press and 2 on release; the old code ignored state 1,
+        // so hold duration and double-taps were impossible to detect.
+        if state == 1 {
+            self.button_down_at.insert(command_name.clone(), now_millis());
+        }
+
         if state == 2 {
+            // Classify click / long / double using the recorded down time and
+            // the gap since the previous up of the same button.
+            let gesture = self.classify_gesture(&command_name);
             match command_name.as_str() {
                 "volume_up" | "volume_down" => {
-                    self.delegate.on_button(&command_name);
+                    self.delegate.on_button_gesture(&command_name, gesture);
                     if let Some((vol, muted)) = self.delegate.get_audio_state() {
                         self.volume = vol;
                         self.muted = muted;
@@ -850,7 +912,7 @@ impl CompanionSession {
                     self.push_media_state(xid).await?;
                 }
                 "mute" => {
-                    self.delegate.on_button(&command_name);
+                    self.delegate.on_button_gesture(&command_name, gesture);
                     if let Some((vol, muted)) = self.delegate.get_audio_state() {
                         self.volume = vol;
                         self.muted = muted;
@@ -891,15 +953,15 @@ impl CompanionSession {
                         "power_state",
                         &format!("{{\"display_on\":{}}}", self.display_power_on),
                     );
-                    self.delegate.on_button(&command_name);
+                    self.delegate.on_button_gesture(&command_name, gesture);
                 }
                 _ => {
-                    self.delegate.on_button(&command_name);
+                    self.delegate.on_button_gesture(&command_name, gesture);
                 }
             }
             self.inspector.emit(
                 "button",
-                &format!("{{\"name\":\"{command_name}\"}}"),
+                &format!("{{\"name\":\"{command_name}\",\"gesture\":\"{gesture}\"}}"),
             );
         }
         Ok(())

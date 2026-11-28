@@ -16,6 +16,30 @@ object DeviceInfo {
     const val PREF_HTTP_HOST = "http_key_host"
     const val PREF_HTTP_PORT = "http_key_port"
 
+    // mitv4a v1.6.0: per-button custom mapping.
+    // Key format: "btnmap_{buttonName}_{gesture}" -> Android key name string
+    // (e.g. KEYCODE_CHANNEL_UP) or a special action token (e.g.
+    // ACTION_CLEAR_APPS). An empty/absent value means "use default".
+    fun buttonMapKey(button: String, gesture: String): String =
+        "btnmap_${button.lowercase()}_${gesture.lowercase()}"
+
+    fun getButtonMapping(context: Context, button: String, gesture: String): String? {
+        val v = getPrefs(context).getString(buttonMapKey(button, gesture), null)
+        return if (v.isNullOrBlank()) null else v
+    }
+
+    fun setButtonMapping(context: Context, button: String, gesture: String, action: String?) {
+        getPrefs(context).edit()
+            .putString(buttonMapKey(button, gesture), action?.takeIf { it.isNotBlank() })
+            .apply()
+    }
+
+    fun clearAllButtonMappings(context: Context) {
+        val edit = getPrefs(context).edit()
+        getPrefs(context).all.keys.filter { it.startsWith("btnmap_") }.forEach { edit.remove(it) }
+        edit.apply()
+    }
+
     fun getPrefs(context: Context): SharedPreferences {
         val storageContext = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && !context.isDeviceProtectedStorage) {
             try {

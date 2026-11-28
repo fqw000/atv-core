@@ -28,6 +28,12 @@ object AtvNative {
         fun onTouch(dx: Double, dy: Double, phase: Int)
         fun onAudio(volume: Double, muted: Boolean)
         fun onEvent(kind: String, detail: String)
+
+        /** mitv4a v1.6.0: gesture-aware button (click/long/double). */
+        fun onButtonGesture(name: String, gesture: String) {
+            // Default: treat as a normal click so older callbacks keep working.
+            onButton(name)
+        }
     }
 
     external fun nativeStartServer(

@@ -23,12 +23,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvPin: TextView
     private lateinit var tvAccessibility: TextView
     private lateinit var tvMenuBinding: TextView
+    private lateinit var tvButtonMapping: TextView
     private lateinit var tvInjectionMode: TextView
     private lateinit var tvDriverStatus: TextView
     private lateinit var tvLog: TextView
     private lateinit var btnToggle: Button
     private lateinit var btnAccessibility: Button
     private lateinit var btnMenuBinding: Button
+    private lateinit var btnButtonMapping: Button
+    private lateinit var btnResetMapping: Button
     private lateinit var btnInjectionMode: Button
 
     private val logEntries = mutableListOf<String>()
@@ -53,16 +56,30 @@ class MainActivity : AppCompatActivity() {
         tvPin = findViewById(R.id.tvPin)
         tvAccessibility = findViewById(R.id.tvAccessibility)
         tvMenuBinding = findViewById(R.id.tvMenuBinding)
+        tvButtonMapping = findViewById(R.id.tvButtonMapping)
         tvInjectionMode = findViewById(R.id.tvInjectionMode)
         tvDriverStatus = findViewById(R.id.tvDriverStatus)
         tvLog = findViewById(R.id.tvLog)
         btnToggle = findViewById(R.id.btnToggle)
         btnAccessibility = findViewById(R.id.btnAccessibility)
         btnMenuBinding = findViewById(R.id.btnMenuBinding)
+        btnButtonMapping = findViewById(R.id.btnButtonMapping)
+        btnResetMapping = findViewById(R.id.btnResetMapping)
         btnInjectionMode = findViewById(R.id.btnInjectionMode)
 
         btnMenuBinding.setOnClickListener {
             showMenuBindingDialog()
+        }
+
+        btnButtonMapping.setOnClickListener {
+            showButtonPickerDialog()
+        }
+
+        btnResetMapping.setOnClickListener {
+            DeviceInfo.clearAllButtonMappings(this)
+            appendLog("[Config] 按钮自定义已重置为默认")
+            updateUi()
+            Toast.makeText(this, "已重置为默认映射", Toast.LENGTH_SHORT).show()
         }
 
         btnInjectionMode.setOnClickListener {
@@ -157,6 +174,12 @@ class MainActivity : AppCompatActivity() {
         val currentBinding = DeviceInfo.getMenuButtonBinding(this)
         tvMenuBinding.text = "Menu 键映射: ${getMenuBindingDisplayName(currentBinding)}"
 
+        val customCount = DeviceInfo.getPrefs(this).all.keys.count { it.startsWith("btnmap_") }
+        tvButtonMapping.text = if (customCount == 0)
+            "按钮自定义: 默认映射 (点此配置单击/长按/双击)"
+        else
+            "按钮自定义: $customCount 项已改 (点此继续配置)"
+
         // Injection mode display
         val mode = KeyDispatcher.currentMode
         tvInjectionMode.text = "按键注入模式: ${mode.displayName}"
@@ -229,6 +252,64 @@ class MainActivity : AppCompatActivity() {
                 dialog.dismiss()
             }
             .setNegativeButton("取消", null)
+            .show()
+    }
+
+    // ---- mitv4a v1.6.0: button customisation (button -> gesture -> action) ----
+
+    private fun showButtonPickerDialog() {
+        val buttons = ButtonMapping.BUTTONS
+        val labels = buttons.map { "${it.label}  (${it.name})" }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("第 1 步：选择按钮")
+            .setItems(labels) { _, which ->
+                showGesturePickerDialog(buttons[which])
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun showGesturePickerDialog(button: ButtonMapping.Button) {
+        val gLabels = ButtonMapping.GESTURES.map { ButtonMapping.gestureLabel(it) }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("第 2 步：${button.label} — 选择手势")
+            .setItems(gLabels) { _, gWhich ->
+                val gesture = ButtonMapping.GESTURES[gWhich]
+                showActionPickerDialog(button, gesture)
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun showActionPickerDialog(button: ButtonMapping.Button, gesture: String) {
+        val actionLabels = ButtonMapping.ACTIONS.map { it.second }.toTypedArray()
+        val actionValues = ButtonMapping.ACTIONS.map { it.first }.toTypedArray()
+
+        // Current effective value (explicit mapping, else click mapping, else default).
+        var currentAction = DeviceInfo.getButtonMapping(this, button.name, gesture)
+        if (currentAction == null && gesture != ButtonMapping.GESTURE_CLICK) {
+            currentAction = DeviceInfo.getButtonMapping(this, button.name, ButtonMapping.GESTURE_CLICK)
+        }
+        if (currentAction == null) currentAction = button.defaultKey
+        val currentIndex = actionValues.indexOf(currentAction).let { if (it >= 0) it else 0 }
+
+        AlertDialog.Builder(this)
+            .setTitle("第 3 步：${button.label} / ${ButtonMapping.gestureLabel(gesture)} → 动作")
+            .setMessage("TVRemoteIME 按键用字符串键名注入；长按=按下→延时→抬起，双击=两次按键。")
+            .setSingleChoiceItems(actionLabels, currentIndex) { dialog, which ->
+                val action = actionValues[which]
+                DeviceInfo.setButtonMapping(this, button.name, gesture, action)
+                appendLog("[Config] ${button.name}/${gesture} -> ${ButtonMapping.actionLabel(action)}")
+                dialog.dismiss()
+                updateUi()
+                Toast.makeText(this, "已设置: ${button.label} / ${ButtonMapping.gestureLabel(gesture)} → ${ButtonMapping.actionLabel(action)}", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("取消", null)
+            .setNeutralButton("恢复默认") { _, _ ->
+                DeviceInfo.setButtonMapping(this, button.name, gesture, null)
+                appendLog("[Config] ${button.name}/${gesture} 恢复默认")
+                updateUi()
+            }
             .show()
     }
 

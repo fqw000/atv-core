@@ -30,7 +30,10 @@ object KeyDispatcher {
     var lastUsedEngine: String = "未执行"
         private set
 
+    private var appContext: Context? = null
+
     fun init(context: Context) {
+        appContext = context.applicationContext
         val savedModeKey = DeviceInfo.getInjectionMode(context)
         currentMode = InjectionMode.fromKey(savedModeKey)
         menuBindingButton = DeviceInfo.getMenuButtonBinding(context)
@@ -47,26 +50,62 @@ object KeyDispatcher {
         Log.i(TAG, "InjectionMode updated to: $mode")
     }
 
-    fun dispatchButton(name: String): String {
+    /** Legacy single-click dispatch (kept for compatibility / touchpad buttons). */
+    fun dispatchButton(name: String): String =
+        dispatchResolved(name, ButtonMapping.GESTURE_CLICK, null)
+
+    /**
+     * mitv4a v1.6.0: gesture-aware dispatch. Resolves the user mapping for
+     * (button, gesture) to an Android key/action, then executes it through the
+     * active injection channel. [name] is the native button name.
+     */
+    fun dispatchButtonGesture(name: String, gesture: String): String {
+        val ctx = appContext
+        val action = if (ctx != null) ButtonMapping.resolve(ctx, name, gesture) else null
+        return dispatchResolved(name, gesture, action)
+    }
+
+    /**
+     * Execute [action] (or a legacy menu-binding derived action when null) via
+     * the active channel, applying the requested gesture.
+     * - HTTP:  click=/key, long=/keydown+wait+/keyup, double=two /key
+     * - ADB:   click=keyevent, long=keyevent --longpress, double=two keyevent
+     * The EVENT/A11Y channels only support single click (they have no gesture
+     * primitive); long/double degrade to a single click there.
+     */
+    private fun dispatchResolved(name: String, gesture: String, resolvedAction: String?): String {
         val lowerName = name.lowercase().trim()
+
+        // Legacy "bind button as MENU" rule (from the older UI) still applies
+        // when there is no explicit per-button mapping.
         val isMappedToMenu = menuBindingButton.isNotBlank() &&
                 menuBindingButton != "none" &&
                 menuBindingButton.equals(lowerName, ignoreCase = true)
+
+        // If the user explicitly mapped to ACTION_NONE, suppress entirely.
+        if (resolvedAction == null && !isMappedToMenu &&
+            appContext?.let { DeviceInfo.getButtonMapping(it, lowerName, gesture) } == ButtonMapping.ACTION_NONE
+        ) {
+            lastUsedEngine = "已屏蔽 (无操作)"
+            Log.i(TAG, "dispatchButton: $name/$gesture suppressed (ACTION_NONE)")
+            return lastUsedEngine
+        }
 
         var executedEngine = "none"
 
         when (currentMode) {
             InjectionMode.AUTO -> {
-                // Tier 1: ADB - preferred when available; also survives HTTP service crashes.
-                // isConnectedOrRetry probes with throttling so ADB opened after boot is detected.
-                if (LocalAdbDriver.isConnectedOrRetry() && LocalAdbDriver.sendKey(lowerName, isMappedToMenu)) {
+                // Tier 1: ADB (if available).
+                if (LocalAdbDriver.isConnectedOrRetry() &&
+                    execAdb(lowerName, gesture, resolvedAction, isMappedToMenu)
+                ) {
                     executedEngine = "ADB 驱动 (127.0.0.1:5555)"
                 }
-                // Tier 2: HTTP /key to TVRemoteIME (works without ADB after reboot)
-                else if (HttpKeyDriver.sendKey(lowerName, isMappedToMenu)) {
+                // Tier 2: HTTP /key to TVRemoteIME (works without ADB after reboot).
+                else if (execHttp(lowerName, gesture, resolvedAction, isMappedToMenu)) {
                     executedEngine = "HTTP /key (TVRemoteIME)"
                 }
-                // Tier 3: Accessibility Service fallback
+                // Tier 3: Accessibility Service fallback.
                 else if (AtvAccessibilityService.instance?.sendKey(lowerName, isMappedToMenu) == true) {
                     executedEngine = "无障碍服务 (Accessibility)"
                 } else {
@@ -75,41 +114,50 @@ object KeyDispatcher {
             }
 
             InjectionMode.HTTP -> {
-                if (HttpKeyDriver.sendKey(lowerName, isMappedToMenu)) {
-                    executedEngine = "HTTP /key (TVRemoteIME)"
-                } else {
-                    executedEngine = "HTTP 失败 (TVRemoteIME 未运行?)"
-                }
+                executedEngine = if (execHttp(lowerName, gesture, resolvedAction, isMappedToMenu))
+                    "HTTP /key (TVRemoteIME)" else "HTTP 失败 (TVRemoteIME 未运行?)"
             }
 
             InjectionMode.ADB -> {
-                if (LocalAdbDriver.sendKey(lowerName, isMappedToMenu)) {
-                    executedEngine = "ADB 驱动 (127.0.0.1:5555)"
-                } else {
-                    executedEngine = "ADB 失败 (需手动开启网络ADB)"
-                }
+                executedEngine = if (execAdb(lowerName, gesture, resolvedAction, isMappedToMenu))
+                    "ADB 驱动 (127.0.0.1:5555)" else "ADB 失败 (需手动开启网络ADB)"
             }
 
             InjectionMode.EVENT -> {
-                if (RemoteController.sendKey(lowerName, isMappedToMenu)) {
-                    executedEngine = "硬件事件驱动"
-                } else {
-                    executedEngine = "硬件驱动失败 (miTV4A 未 root，此通道不可用)"
-                }
+                // Hardware event path has no gesture primitive; single click only.
+                executedEngine = if (RemoteController.sendKey(lowerName, isMappedToMenu))
+                    "硬件事件驱动" else "硬件驱动失败 (miTV4A 未 root)"
             }
 
             InjectionMode.A11Y -> {
-                if (AtvAccessibilityService.instance?.sendKey(lowerName, isMappedToMenu) == true) {
-                    executedEngine = "无障碍服务"
-                } else {
-                    executedEngine = "无障碍服务失败 (服务未开启)"
-                }
+                executedEngine = if (AtvAccessibilityService.instance?.sendKey(lowerName, isMappedToMenu) == true)
+                    "无障碍服务" else "无障碍服务失败 (服务未开启)"
             }
         }
 
         lastUsedEngine = executedEngine
-        val display = if (isMappedToMenu) "$name -> MENU" else name
-        Log.i(TAG, "dispatchButton: $display via [$executedEngine]")
+        Log.i(TAG, "dispatchButton: $name/$gesture -> ${resolvedAction ?: lowerName} via [$executedEngine]")
         return executedEngine
+    }
+
+    private fun execHttp(name: String, gesture: String, action: String?, asMenu: Boolean): Boolean {
+        val key = action ?: if (asMenu) "KEYCODE_MENU" else ButtonMapping.BUTTONS
+            .find { it.name.equals(name, ignoreCase = true) }?.defaultKey
+            ?: "KEYCODE_${name.uppercase()}"
+        return when (gesture) {
+            ButtonMapping.GESTURE_LONG -> HttpKeyDriver.sendLong(key)
+            ButtonMapping.GESTURE_DOUBLE -> HttpKeyDriver.sendDouble(key)
+            else -> HttpKeyDriver.sendAction(key)
+        }
+    }
+
+    private fun execAdb(name: String, gesture: String, action: String?, asMenu: Boolean): Boolean {
+        val key = action ?: if (asMenu) "KEYCODE_MENU" else
+            LocalAdbDriver.keyNameFor(name) ?: "KEYCODE_${name.uppercase()}"
+        return when (gesture) {
+            ButtonMapping.GESTURE_LONG -> LocalAdbDriver.sendActionGesture(key, gesture)
+            ButtonMapping.GESTURE_DOUBLE -> LocalAdbDriver.sendActionGesture(key, gesture)
+            else -> LocalAdbDriver.sendActionGesture(key, ButtonMapping.GESTURE_CLICK)
+        }
     }
 }

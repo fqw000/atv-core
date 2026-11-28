@@ -309,15 +309,17 @@ class AtvService : Service(), AtvNative.Callback {
     }
 
     override fun onButton(name: String) {
-        val lowerName = name.lowercase().trim()
-        val isMapped = KeyDispatcher.menuBindingButton.isNotBlank() &&
-                KeyDispatcher.menuBindingButton != "none" &&
-                KeyDispatcher.menuBindingButton.equals(lowerName, ignoreCase = true)
-
-        val display = if (isMapped) "$name -> MENU" else name
+        // Legacy path (touchpad tap/swipe derived buttons) — no gesture info.
         val engine = KeyDispatcher.dispatchButton(name)
-        Log.i(TAG, "onButton: $display via [$engine]")
-        broadcast("Button", "$display [$engine]")
+        Log.i(TAG, "onButton: $name via [$engine]")
+        broadcast("Button", "$name [$engine]")
+    }
+
+    /** mitv4a v1.6.0: gesture-aware button from native HID up/down timing. */
+    override fun onButtonGesture(name: String, gesture: String) {
+        val engine = KeyDispatcher.dispatchButtonGesture(name, gesture)
+        Log.i(TAG, "onButtonGesture: $name/$gesture via [$engine]")
+        broadcast("Button", "$name ($gesture) [$engine]")
     }
 
     override fun onTouch(dx: Double, dy: Double, phase: Int) {

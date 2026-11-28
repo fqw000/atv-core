@@ -159,6 +159,35 @@ impl AtvDelegate for JniDelegate {
         self.call_void_string("onButton", name);
     }
 
+    /// mitv4a v1.6.0: gesture-aware button callback. Calls Kotlin
+    /// `onButtonGesture(name, gesture)` where gesture is click/long/double.
+    fn on_button_gesture(&self, name: &str, gesture: &str) {
+        info!("[Android JNI] on_button_gesture: {name} / {gesture}");
+        if let Ok(mut env) = self.jvm.attach_current_thread() {
+            let jname = match env.new_string(name) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("failed to create JString for name: {e}");
+                    return;
+                }
+            };
+            let jgesture = match env.new_string(gesture) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("failed to create JString for gesture: {e}");
+                    return;
+                }
+            };
+            let obj = self.callback.as_obj();
+            let _ = env.call_method(
+                obj,
+                "onButtonGesture",
+                "(Ljava/lang/String;Ljava/lang/String;)V",
+                &[JValue::Object(&jname), JValue::Object(&jgesture)],
+            );
+        }
+    }
+
     fn on_touch(&self, dx: f64, dy: f64, phase: TouchPhase) {
         if let Ok(mut env) = self.jvm.attach_current_thread() {
             let phase_int = match phase {

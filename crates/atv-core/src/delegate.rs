@@ -119,6 +119,19 @@ pub trait AtvDelegate: Send + Sync + 'static {
     /// surface also arrive here as directional buttons.
     fn on_button(&self, _name: &str) {}
 
+    /// A remote button action with gesture classification (mitv4a v1.6.0).
+    /// `gesture` is one of "click" (normal tap), "long" (held >= threshold)
+    /// or "double" (two taps within the double-tap window).
+    ///
+    /// This is emitted *instead of* a plain `on_button` for buttons that the
+    /// gesture detector has classified. Delegates that don't care about
+    /// gestures can keep implementing only `on_button`; the default impl here
+    /// forwards to `on_button` so behaviour is unchanged for existing users.
+    fn on_button_gesture(&self, name: &str, gesture: &str) {
+        let _ = gesture;
+        self.on_button(name);
+    }
+
     /// Touch surface activity. `dx`/`dy` are deltas in phone touchpad units
     /// (the surface is 1000x1000). On `Began` the deltas are zero; on `Ended`
     /// they are the total displacement from the touch origin.

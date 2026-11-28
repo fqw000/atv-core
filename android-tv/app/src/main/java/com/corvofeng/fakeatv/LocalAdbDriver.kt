@@ -170,4 +170,31 @@ object LocalAdbDriver {
         }
         return execShell("input keyevent $keycode")
     }
+
+    /** Resolve a native button name to its KEYCODE name (for resolved actions). */
+    fun keyNameFor(name: String): String? = KEY_MAP[name.lowercase()]
+
+    /**
+     * mitv4a v1.6.0: execute an Android key name with a gesture.
+     * - long: `input keyevent --longpress KEYCODE` (present since early Android;
+     *   API 23 has --longpress. --duration is newer and avoided here).
+     * - double: two `input keyevent KEYCODE` with a short gap.
+     * - clear-apps: KEYCODE_APP_SWITCH (swipe-clear in recents is firmware-specific).
+     */
+    fun sendActionGesture(key: String, gesture: String): Boolean {
+        if (key == ButtonMapping.ACTION_NONE) return false
+        if (key == ButtonMapping.ACTION_CLEAR_APPS) {
+            return execShell("input keyevent KEYCODE_APP_SWITCH")
+        }
+        return when (gesture) {
+            ButtonMapping.GESTURE_LONG -> execShell("input keyevent --longpress $key")
+            ButtonMapping.GESTURE_DOUBLE -> {
+                val a = execShell("input keyevent $key")
+                try { Thread.sleep(130) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
+                val b = execShell("input keyevent $key")
+                a && b
+            }
+            else -> execShell("input keyevent $key")
+        }
+    }
 }
